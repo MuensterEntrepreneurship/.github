@@ -35,6 +35,6 @@ Germany
   <br>
   <br>
   ✉️ <a href="mailto:ent@wiwi.uni-muenster.de">ent@wiwi.uni-muenster.de</a>
-  <br>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
   🌐 <a href="https://www.wiwi.uni-muenster.de/ent/en">Website</a>
 </p>
