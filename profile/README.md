@@ -32,3 +32,11 @@ Germany
 
 ✉️ [ent@wiwi.uni-muenster.de](mailto:ent@wiwi.uni-muenster.de)  
 🌐 [English](https://www.wiwi.uni-muenster.de/ent/en) · [German](https://www.wiwi.uni-muenster.de/ent/de)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/mark-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/mark-light.png">
+    <img alt="" src="assets/mark-light.png" width="44">
+  </picture>
+</p>
