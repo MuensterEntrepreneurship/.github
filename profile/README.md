@@ -22,14 +22,15 @@ Open an issue in the repository concerned to report a problem or propose a chang
 
 ## Contact
 
-University of Münster  
-Institute for Entrepreneurship  
-Leonardo-Campus 9  
-48149 Münster  
-Germany
-
 <p align="center">
   <img alt="" src="assets/mark.png" width="44">
+  <br>
+  <br>
+  Institute for Entrepreneurship
+  <br>
+  University of Münster
+  <br>
+  Leonardo-Campus 9, 48149 Münster, Germany
   <br>
   <br>
   <a href="mailto:ent@wiwi.uni-muenster.de"><img alt="" src="assets/icon-mail.svg" width="16" align="absmiddle"> E-mail</a>
