@@ -30,5 +30,5 @@ Leonardo-Campus 9
 48149 Münster  
 Germany
 
-- E-mail: [ent@wiwi.uni-muenster.de](mailto:ent@wiwi.uni-muenster.de)
-- Website: [English](https://www.wiwi.uni-muenster.de/ent/en) · [German](https://www.wiwi.uni-muenster.de/ent/de)
+✉️ [ent@wiwi.uni-muenster.de](mailto:ent@wiwi.uni-muenster.de)  
+🌐 [English](https://www.wiwi.uni-muenster.de/ent/en) · [German](https://www.wiwi.uni-muenster.de/ent/de)
