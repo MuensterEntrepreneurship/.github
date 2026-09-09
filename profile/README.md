@@ -10,16 +10,6 @@
 
 The [Institute for Entrepreneurship](https://www.wiwi.uni-muenster.de/ent/en) researches and teaches at the interface of established companies and start-ups. The team is led by Prof. Dr. David Bendig. The institute is part of the [Center for Management](https://www.wiwi.uni-muenster.de/cfm/en) and connected to the [REACH – EUREGIO Start-up Center](https://www.reach-euregio.de/), which transfers research into practice.
 
-## Repositories
-
-### Templates and organization defaults
-
-- [.github](https://github.com/MuensterEntrepreneurship/.github) – This organization profile and the default community health files that apply to all repositories of the organization.
-
-## Contributing
-
-Open an issue in the repository concerned to report a problem or propose a change. Open a pull request against the default branch for code or text changes. Describe what you changed and why in the pull request.
-
 ## Contact
 
 <p align="center">
