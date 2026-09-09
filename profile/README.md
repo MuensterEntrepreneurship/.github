@@ -10,7 +10,7 @@ This organization publishes the code, templates and default repository settings 
 
 ## Who we are
 
-The [Institute for Entrepreneurship](https://www.wiwi.uni-muenster.de/ent/en) researches and teaches at the interface of established companies and start-ups. The team is led by Prof. Dr. David Bendig. The institute is part of the [Center for Management](https://www.wiwi.uni-muenster.de/cfm/) and connected to the [REACH – EUREGIO Start-up Center](https://www.reach-euregio.de/), which transfers research into practice.
+The [Institute for Entrepreneurship](https://www.wiwi.uni-muenster.de/ent/en) researches and teaches at the interface of established companies and start-ups. The team is led by Prof. Dr. David Bendig. The institute is part of the [Center for Management](https://www.wiwi.uni-muenster.de/cfm/en) and connected to the [REACH – EUREGIO Start-up Center](https://www.reach-euregio.de/), which transfers research into practice.
 
 ## Repositories
 
@@ -31,4 +31,4 @@ Leonardo-Campus 9
 Germany
 
 - E-mail: [ent@wiwi.uni-muenster.de](mailto:ent@wiwi.uni-muenster.de)
-- Website: [German](https://www.wiwi.uni-muenster.de/ent/de) · [English](https://www.wiwi.uni-muenster.de/ent/en)
+- Website: [English](https://www.wiwi.uni-muenster.de/ent/en) · [German](https://www.wiwi.uni-muenster.de/ent/de)
