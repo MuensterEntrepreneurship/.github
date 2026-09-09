@@ -34,7 +34,7 @@ Germany
   <img alt="" src="assets/mark.png" width="44">
   <br>
   <br>
-  ✉️ <a href="mailto:ent@wiwi.uni-muenster.de">ent@wiwi.uni-muenster.de</a>
-  &nbsp;&nbsp;·&nbsp;&nbsp;
+  ✉️ <a href="mailto:ent@wiwi.uni-muenster.de">E-mail</a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
   🌐 <a href="https://www.wiwi.uni-muenster.de/ent/en">Website</a>
 </p>
