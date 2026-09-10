@@ -203,7 +203,7 @@ jobs:
             publish_sciebo.py --self-test           Offline-Prüfung der Schutzlogik, kein Netz
 
           Umgebung:
-            SLUG                 Kurzname der Extension, z.B. sciebo-files oder uni-mail
+            SLUG                 Kurzname der Extension, z.B. sciebo oder uni-mail
             OTHER_SLUGS          die übrigen bekannten Slugs, durch Leerzeichen getrennt
                                  (optional; kein Slug darf Präfix eines anderen sein)
             SCIEBO_BASE_URL      https://<host>, z.B. https://uni-muenster.sciebo.de   (Variable)

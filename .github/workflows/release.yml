@@ -14,9 +14,9 @@ name: release
 # ein wiederverwendbarer Workflow kennt seine eigene Ref nicht zuverlässig -,
 # deshalb liegt apply_variant.mjs unten inline im Schritt.
 #
-# Der Slug (sciebo-files, uni-mail, ...) ist Pflicht-Eingabe und wird NIE aus dem
+# Der Slug (sciebo, uni-mail, ...) ist Pflicht-Eingabe und wird NIE aus dem
 # Repo-Namen abgeleitet: das Repo heißt mcp-sciebo, die Dateien heißen weiter
-# sciebo-files-v<version>.mcpb. Er ist Präfix aller Dateinamen und - im
+# sciebo-v<version>.mcpb. Er ist Präfix aller Dateinamen und - im
 # Sciebo-Schritt - das einzige Kriterium, welche Dateien dort gelöscht werden dürfen.
 #
 # Aufruf (Extension-Repo, .github/workflows/release.yml): Beispiel im README dieses Repos.
@@ -25,7 +25,7 @@ on:
   workflow_call:
     inputs:
       slug:
-        description: "Kurzname des Bundles und Präfix aller Dateinamen, z.B. sciebo-files. Muss ^[a-z0-9]+(-[a-z0-9]+)*$ entsprechen."
+        description: "Kurzname des Bundles und Präfix aller Dateinamen, z.B. sciebo. Muss ^[a-z0-9]+(-[a-z0-9]+)*$ entsprechen."
         required: true
         type: string
     outputs:
@@ -104,8 +104,10 @@ jobs:
           node-version: 22
 
       - name: Manifest gegen Tag prüfen
+        id: manifest
         env:
           VERSION: ${{ steps.parse.outputs.version }}
+          SLUG: ${{ steps.parse.outputs.slug }}
         run: |
           if [ ! -f manifest.json ]; then
             echo "::error::Keine manifest.json im Wurzelverzeichnis - das Repo IST das Bundle-Verzeichnis"
@@ -116,6 +118,10 @@ jobs:
             echo "::error::Tag-Version '$VERSION' passt nicht zur manifest.json-Version '$MANIFEST_VERSION'"
             exit 1
           fi
+          # Der Anzeigename wird Titel von Release und Rolling-Release; der Slug bleibt
+          # technischer Präfix der Dateinamen. Fehlt display_name, fällt es auf den Slug zurück.
+          TITLE=$(node -p "require('./manifest.json').display_name || process.env.SLUG")
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           # Dieselbe Prüfung für pyproject.toml: genau dieser Drift lief bei
           # github-access schon einmal auseinander (Version 1.2.0 in manifest.json,
           # 1.1.1 in pyproject.toml).
@@ -342,7 +348,7 @@ jobs:
       - name: Release v<version> erstellen
         env:
           GH_TOKEN: ${{ github.token }}
-          SLUG: ${{ steps.parse.outputs.slug }}
+          TITLE: ${{ steps.manifest.outputs.title }}
           VERSION: ${{ steps.parse.outputs.version }}
         run: |
           TAG="v$VERSION"
@@ -353,7 +359,7 @@ jobs:
           else
             gh release create "$TAG" "$RUNNER_TEMP"/dist/*.mcpb \
               --verify-tag \
-              --title "$SLUG v$VERSION" \
+              --title "$TITLE v$VERSION" \
               --notes "$NOTES"
           fi
 
@@ -368,7 +374,7 @@ jobs:
       - name: Rolling-Release latest nachziehen
         env:
           GH_TOKEN: ${{ github.token }}
-          SLUG: ${{ steps.parse.outputs.slug }}
+          TITLE: ${{ steps.manifest.outputs.title }}
           VERSION: ${{ steps.parse.outputs.version }}
         run: |
           DIST="$RUNNER_TEMP/dist"
@@ -398,20 +404,20 @@ jobs:
                    gh release delete-asset "$LATEST_TAG" "$ASSET" --yes ;;
               esac
             done
-            gh release edit "$LATEST_TAG" --title "$SLUG latest (v$VERSION)" --notes "$NOTES" --latest=false
+            gh release edit "$LATEST_TAG" --title "$TITLE latest (v$VERSION)" --notes "$NOTES" --latest=false
             gh release upload "$LATEST_TAG" "$DIST"/latest/*.mcpb --clobber
           else
-            gh release create "$LATEST_TAG" "$DIST"/latest/*.mcpb --title "$SLUG latest (v$VERSION)" --notes "$NOTES" --latest=false
+            gh release create "$LATEST_TAG" "$DIST"/latest/*.mcpb --title "$TITLE latest (v$VERSION)" --notes "$NOTES" --latest=false
           fi
 
       - name: Zusammenfassung
         env:
-          SLUG: ${{ steps.parse.outputs.slug }}
+          TITLE: ${{ steps.manifest.outputs.title }}
           VERSION: ${{ steps.parse.outputs.version }}
           FILES: ${{ steps.pack.outputs.files }}
         run: |
           {
-            echo "## $SLUG v$VERSION"
+            echo "## $TITLE v$VERSION"
             echo
             echo "- Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$VERSION"
             echo "- Rolling: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/latest"
