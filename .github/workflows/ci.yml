@@ -1,0 +1,54 @@
+name: ci
+
+# CI dieses Repos, nicht der aufrufenden Repos. Ein Workflow im .github-Repo einer
+# Organisation wird nicht an andere Repos vererbt (das gilt nur für die
+# Community-Health-Dateien), `on: push` ist hier also unbedenklich.
+#
+# Geprüft wird, was die beiden wiederverwendbaren Workflows zur Laufzeit nachladen:
+# die Skripte in scripts/. Der Selbsttest von publish_sciebo.py deckt die Logik ab,
+# die entscheidet, welche Dateien im gemeinsamen sciebo-Ordner gelöscht werden
+# dürfen. Er lief bisher erst im Produktions-Release eines Aufrufers, mit dessen
+# Zugangsdaten in der Umgebung; hier läuft er offline und ohne jedes Secret.
+
+# Ein Lauf je Pull Request und je Push auf main. Ohne Branch-Filter würde auch
+# jedes Verschieben des Tags v1 einen Lauf auslösen.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Syntax
+        run: |
+          node --check scripts/apply_variant.mjs
+          python3 -m py_compile scripts/publish_sciebo.py
+
+      - name: Selbsttest der Schutzlogik (offline, ohne Secrets)
+        run: python3 scripts/publish_sciebo.py --self-test
+
+      # actionlint prüft Ausdrücke, Kontextnamen und Action-Referenzen in den
+      # Workflow-Dateien. Fängt unter anderem einen Tippfehler in job.workflow_sha
+      # ab, den GitHub sonst still zu einem leeren String auswerten würde.
+      # Der Downloader wird an einem Tag gepinnt, nicht an main: das Skript wird
+      # hier ausgeführt, ein bewegliches main wäre fremder Code im eigenen CI.
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.7"
+        run: |
+          bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v$ACTIONLINT_VERSION/scripts/download-actionlint.bash") "$ACTIONLINT_VERSION"
+          ./actionlint -color

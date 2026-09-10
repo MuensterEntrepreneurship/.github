@@ -1,70 +1,24 @@
 # .github
 
-Dieses Repository enthält das Organisationsprofil (`profile/`) und zwei wiederverwendbare GitHub-Actions-Workflows, die die Extension-Repositories des Instituts nutzen, um Claude-Desktop-Extensions (`.mcpb`) zu bauen und zu verteilen.
+Organisationsprofil und wiederverwendbare Bausteine der Organisation.
 
-## Reusable Workflows
+## Inhalt
 
-| Workflow | Zweck |
-|----------|--------|
-| `.github/workflows/release.yml` | Baut das Bundle aus einem Tag `v<version>`, prüft Manifest, Tools-Liste und Installation; erstellt Release `v<version>` und Rolling-Release `latest`; übergibt die Bundles als Artefakt `mcpb-bundles`. |
-| `.github/workflows/publish-sciebo.yml` | Spiegelt diese Bundles per WebDAV in den sciebo-Ordner des aufrufenden Repos und räumt dort nur ältere Bundles desselben Kurznamens weg. |
-
-## Aufruf
-
-Jedes Extension-Repository hat diese Datei als `.github/workflows/release.yml`, wobei nur `slug:` unterschiedlich ist:
-
-```yaml
-name: Release
-on:
-  push:
-    tags: ["v*"]
-concurrency:
-  group: release
-  cancel-in-progress: false
-jobs:
-  release:
-    uses: MuensterEntrepreneurship/.github/.github/workflows/release.yml@main
-    with:
-      slug: sciebo
-    secrets: inherit
-    permissions:
-      contents: write
-  publish-sciebo:
-    needs: release
-    uses: MuensterEntrepreneurship/.github/.github/workflows/publish-sciebo.yml@main
-    with:
-      slug: ${{ needs.release.outputs.slug }}
-      version: ${{ needs.release.outputs.version }}
-    secrets: inherit
-    permissions:
-      contents: read
-```
-
-## Was ein aufrufendes Repo braucht
-
-- `manifest.json`, `pyproject.toml`, `uv.lock` im Repository-Root (der Root ist das Bundle-Verzeichnis)
-- Optional: `variants.json` für mehrere Bundles aus einer Quelle
-- `.mcpbignore` mit mindestens `.github/`, `dist/`, `.claude/`
-- Version identisch in `manifest.json`, `pyproject.toml` (und `__init__.py` falls vorhanden) und Tag `v<version>`
-- Repository-Secrets: `SCIEBO_USER` (der sciebo-Login) und `SCIEBO_APP_PASSWORD` (App-Passwort aus sciebo, Einstellungen, Sicherheit)
-- Repository-Variablen: `SCIEBO_BASE_URL` (nur der Host, `https://uni-muenster.sciebo.de`; das Skript ergänzt `/remote.php/dav/files/<SCIEBO_USER>`) und `SCIEBO_FOLDER` (Zielordner unterhalb der Dateien-Wurzel)
-- GitHub Actions müssen wiederverwendbare Workflows aus öffentlichen Repos der Organisation aufrufen dürfen
-
-## Kurznamen (Slugs)
-
-| Slug | Repository |
-|------|------------|
-| confluence | mcp-confluence |
-| github-access | mcp-github-access |
-| sciebo | mcp-sciebo |
-| uni-mail | mcp-uni-mail |
-
-Der Slug ist das Präfix aller Bundle-Dateinamen (`<slug>-v<version>.mcpb`, mit Varianten `<slug>-<key>-v<version>.mcpb`) und das einzige Kriterium dafür, welche Dateien ein Repo im gemeinsamen sciebo-Ordner löschen darf. Slugs sind erforderliche Eingaben und werden nie vom Repository-Namen abgeleitet. Die Allowlist lebt in `publish-sciebo.yml` (`KNOWN_SLUGS`); eine neue Extension erfordert das Hinzufügen des Slugs dort. Kein Slug darf ein anderer Slug plus `-…` sein (in beide Richtungen); der Workflow prüft dies paarweise und lehnt ab.
+| Pfad | Zweck |
+|------|-------|
+| `profile/README.md` | Öffentliches Organisationsprofil, gerendert auf `github.com/MuensterEntrepreneurship` |
+| `.github/workflows/` | Wiederverwendbare Workflows, jeder einzeln aufrufbar. Reusable Workflows müssen direkt hier liegen; Unterordner löst GitHub nicht auf. Alle haben nur `on: workflow_call` und laufen in diesem Repo nie von selbst. |
+| `scripts/` | Hilfsskripte, die die Workflows zur Laufzeit nachladen |
+| `docs/` | Eine Anleitung je Workflow: [`release`](docs/release.md), [`publish-sciebo`](docs/publish-sciebo.md) |
+| `.github/workflows/ci.yml` | CI dieses Repos: Syntaxprüfung und Selbsttest der Skripte |
 
 ## Schreibrecht
 
-Schreibzugriff auf dieses Repository bleibt bei den Organisationsinhabern; Teams werden hier nicht hinzugefügt. Jede Änderung auf `main` läuft beim nächsten Tag jedes Extension-Repositories mit dessen Secrets.
+Schreibzugriff bleibt bei den Organisationsinhabern; Teams werden hier nicht hinzugefügt. Ein
+aufgerufener Workflow läuft mit den Secrets des aufrufenden Repos.
 
-## Herkunft
+## Organisationsprofil
 
-Diese Workflows ersetzen die Monorepo-Automatisierung von `MuensterEntrepreneurship/mcp-extensions` (archiviert), die dieselbe Logik pro Extension enthielt.
+`profile/README.md` ist das öffentliche Profil. Eine nur für Mitglieder sichtbare Variante lädt
+GitHub ausschließlich aus einem separaten, privaten Repository `.github-private`, ebenfalls unter
+`profile/README.md`; sie existiert derzeit nicht.

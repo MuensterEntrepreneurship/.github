@@ -3,23 +3,26 @@ name: release
 # Wiederverwendbarer Release-Workflow für die mcp-*-Repos der Org. Baut die
 # Claude-Desktop-Extension (.mcpb) des AUFRUFENDEN Repos aus einem Tag v<version>,
 # testet die Installation, erstellt das Release v<version> und zieht das
-# Rolling-Release `latest` nach. Die gebauten Bundles gehen als Artefakt an den
-# zweiten wiederverwendbaren Workflow (publish-sciebo.yml) - derselbe Lauf, dieselben
-# Bytes, kein erneuter Download.
+# Rolling-Release `latest` nach. Die gebauten Bundles liegen danach als Artefakt
+# `mcpb-bundles` bereit, für einen Folge-Job im selben Lauf (etwa publish-sciebo.yml):
+# dieselben Bytes, kein erneuter Download. Der Workflow funktioniert auch ohne
+# einen solchen Folge-Job.
 #
 # Kontext-Regel: In einem wiederverwendbaren Workflow gehören `github.*`, die
 # GITHUB_*-Umgebungsvariablen, `secrets`, `vars` und der Checkout immer dem
 # AUFRUFER. GITHUB_REF_NAME ist also der Tag des Extension-Repos (v0.1.1),
-# GITHUB_REPOSITORY dessen Name. Aus dem .github-Repo wird nichts ausgecheckt -
-# ein wiederverwendbarer Workflow kennt seine eigene Ref nicht zuverlässig -,
-# deshalb liegt apply_variant.mjs unten inline im Schritt.
+# GITHUB_REPOSITORY dessen Name. Seine eigene Herkunft kennt der Workflow
+# dagegen über den `job`-Kontext: job.workflow_repository und job.workflow_sha
+# zeigen auf dieses .github-Repo an dem Commit, aus dem dieser Job läuft.
+# Genau daran wird scripts/apply_variant.mjs unten nachgeladen.
 #
 # Der Slug (sciebo, uni-mail, ...) ist Pflicht-Eingabe und wird NIE aus dem
 # Repo-Namen abgeleitet: das Repo heißt mcp-sciebo, die Dateien heißen weiter
 # sciebo-v<version>.mcpb. Er ist Präfix aller Dateinamen und - im
 # Sciebo-Schritt - das einzige Kriterium, welche Dateien dort gelöscht werden dürfen.
 #
-# Aufruf (Extension-Repo, .github/workflows/release.yml): Beispiel im README dieses Repos.
+# Aufruf, Ein- und Ausgaben, Anforderungen an das aufrufende Repo: docs/release.md.
+# Aufrufer referenzieren den verschobenen Tag `v1`, nicht `main`.
 
 on:
   workflow_call:
@@ -153,85 +156,41 @@ jobs:
             console.log(`OK: ${b.size} Tools synchron.`);
           '
 
-      # apply_variant.mjs liegt inline, weil dieser Workflow das .github-Repo nicht
-      # auschecken kann (siehe Kopf). Heredoc mit quotiertem Delimiter: die Shell
-      # expandiert nichts. Achtung beim Bearbeiten: Der Text darf NIRGENDS die
-      # GitHub-Ausdrucksklammer (Dollarzeichen plus zwei geschweifte Klammern) enthalten -
-# die würde der Expression-Parser von GitHub
-      # vor der Shell auswerten. Template-Literale mit einer Klammer (${x}) sind ok.
-      - name: Hilfsskript apply_variant.mjs bereitstellen
+      # apply_variant.mjs liegt als scripts/apply_variant.mjs in diesem Repo und wird
+      # hier nachgeladen. Dieser Workflow kann das .github-Repo nicht per
+      # actions/checkout auschecken (siehe Kopf), kennt aber über den `job`-Kontext
+      # seine eigene Herkunft: job.workflow_repository und job.workflow_sha zeigen auf
+      # die Datei, die diesen Job definiert, also auf dieses Repo an genau dem Commit,
+      # mit dem der Aufrufer den Workflow aufgerufen hat.
+      #
+      # Ziel ist $RUNNER_TEMP, NICHT das Arbeitsverzeichnis: der Arbeitsbaum ist das
+      # Bundle-Verzeichnis, alles darin landet im .mcpb.
+      - name: Hilfsskript apply_variant.mjs aus diesem Repo holen
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+          # Der Token des AUFRUFERS. Er braucht keinen Zugriff auf dieses Repo, das
+          # öffentlich ist; authentifiziert wird nur, um das anonyme Rate Limit der
+          # API (60/h je Runner-IP) nicht zu treffen.
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cat > "$RUNNER_TEMP/apply_variant.mjs" <<'APPLY_VARIANT_MJS'
-          // Patch an extension's manifest for one variant from its variants.json, in place.
-          //
-          // Used by the release workflow to build several .mcpb from one source: a Claude
-          // Desktop extension holds a single user_config, so one installation means one
-          // account. Where separate installations are wanted - so that each one reaches only
-          // its own account and keeps its own keychain entry - the difference between them is
-          // nothing but identity and prefilled defaults.
-          //
-          // Only these fields are touched: name, display_name, the leading sentence of the
-          // two descriptions, the default of the EWS endpoint, and the mailbox hint appended
-          // to every tool description. The hint matters because all variants export the same
-          // tool names, and the description is what a model reads when it picks between them.
-          //
-          //   node apply_variant.mjs <extension-dir> <variant-key>
-          // Lives inline in MuensterEntrepreneurship/.github/.github/workflows/release.yml;
-          // in the extension repos the extension dir is the repo root (".").
-
-          import { readFileSync, writeFileSync } from "node:fs";
-          import { join } from "node:path";
-
-          const [dir, key] = process.argv.slice(2);
-          if (!dir || !key) {
-            console.error("usage: apply_variant.mjs <extension-dir> <variant-key>");
-            process.exit(2);
-          }
-
-          const variantsPath = join(dir, "variants.json");
-          const manifestPath = join(dir, "manifest.json");
-          const { variants } = JSON.parse(readFileSync(variantsPath, "utf8"));
-          const variant = variants.find((entry) => entry.key === key);
-          if (!variant) {
-            console.error(
-              `no variant ${JSON.stringify(key)} in ${variantsPath}; ` +
-                `have: ${variants.map((v) => v.key).join(", ")}`,
-            );
-            process.exit(1);
-          }
-
-          const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-
-          manifest.name = variant.name;
-          manifest.display_name = variant.display_name;
-
-          // Say which mailbox this bundle is for, first thing, in both description fields.
-          const prefix = `${variant.mailbox}. `;
-          manifest.description = prefix + manifest.description;
-          manifest.long_description = prefix + manifest.long_description;
-
-          if (variant.ews_url) {
-            const field = manifest.user_config?.ews_url;
-            if (!field) {
-              console.error("manifest has no user_config.ews_url to prefill");
-              process.exit(1);
-            }
-            field.default = variant.ews_url;
-          }
-
-          // Every variant exports the same tool names, so the mailbox goes into each
-          // description - that line is the only thing distinguishing them in a tool list.
-          for (const tool of manifest.tools ?? []) {
-            tool.description = `${tool.description} [${variant.mailbox}]`;
-          }
-
-          writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-          console.log(
-            `${key}: name=${manifest.name} display_name=${manifest.display_name} ` +
-              `endpoint=${variant.ews_url ?? "(unverändert)"}`,
-          );
-          APPLY_VARIANT_MJS
-          node --check "$RUNNER_TEMP/apply_variant.mjs"
+          # Ein Tippfehler im Kontextnamen ergibt bei GitHub keinen Fehler, sondern
+          # den leeren String. Das hier scheitert dann laut, statt eine 404 vom
+          # Tarball-Endpunkt zu erklären.
+          [ -n "$WF_REPO" ] || { echo "::error::job.workflow_repository ist leer"; exit 1; }
+          [[ "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha ist keine SHA: '$WF_SHA'"; exit 1; }
+          DIR="$RUNNER_TEMP/dotgithub"
+          mkdir -p "$DIR"
+          curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$WF_REPO/tarball/$WF_SHA" \
+            | tar -xz -C "$DIR" --strip-components=1 --wildcards '*/scripts/apply_variant.mjs'
+          SCRIPT="$DIR/scripts/apply_variant.mjs"
+          [ -f "$SCRIPT" ] || { echo "::error::scripts/apply_variant.mjs nicht im Tarball von $WF_REPO@$WF_SHA"; exit 1; }
+          node --check "$SCRIPT"
+          echo "APPLY_VARIANT_MJS=$SCRIPT" >> "$GITHUB_ENV"
+          echo "Skript: $WF_REPO@$WF_SHA:scripts/apply_variant.mjs"
 
       # Eine Extension kann Varianten haben: mehrere Bundles aus derselben Quelle,
       # die sich nur in Identität und Vorbelegung unterscheiden (variants.json).
@@ -259,7 +218,7 @@ jobs:
                 exit 1
               fi
               cp "$RUNNER_TEMP/manifest.orig.json" manifest.json
-              node "$RUNNER_TEMP/apply_variant.mjs" . "$KEY"
+              node "$APPLY_VARIANT_MJS" . "$KEY"
               npx --yes "@anthropic-ai/mcpb@$MCPB_VERSION" validate manifest.json
               npx --yes "@anthropic-ai/mcpb@$MCPB_VERSION" pack . "$DIST/$SLUG-$KEY-v$VERSION.mcpb"
               echo "$SLUG-$KEY" >> "$DIST/slugs.txt"
@@ -328,7 +287,7 @@ jobs:
       # gleich ans Release gehen; der Sciebo-Job lädt es im selben Lauf herunter.
       # 7 Tage genügen für einen "Re-run failed jobs" des Sciebo-Jobs; danach heißt
       # ein erneuter Spiegel: neu taggen.
-      - name: Bundles als Artefakt für den Sciebo-Job sichern
+      - name: Bundles als Artefakt sichern
         uses: actions/upload-artifact@v7
         with:
           name: mcpb-bundles
