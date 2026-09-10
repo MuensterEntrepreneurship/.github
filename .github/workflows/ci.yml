@@ -42,13 +42,21 @@ jobs:
         run: python3 scripts/publish_sciebo.py --self-test
 
       # actionlint prüft Ausdrücke, Kontextnamen und Action-Referenzen in den
-      # Workflow-Dateien. Fängt unter anderem einen Tippfehler in job.workflow_sha
-      # ab, den GitHub sonst still zu einem leeren String auswerten würde.
+      # Workflow-Dateien.
       # Der Downloader wird an einem Tag gepinnt, nicht an main: das Skript wird
       # hier ausgeführt, ein bewegliches main wäre fremder Code im eigenen CI.
+      #
+      # -ignore: actionlints Typtabelle für den job-Kontext kennt nur check_run_id,
+      # container, services und status (expr_sema.go, auch in 1.7.12 noch). Die vier
+      # Herkunftsfelder, die GitHub dokumentiert und die beide Workflows brauchen, um
+      # ihr Skript an der eigenen SHA zu laden, fehlen dort. Der Filter nennt genau
+      # diese Namen, damit ein echter Tippfehler weiterhin auffällt: job.workflow_shaa
+      # würde GitHub still zu einem leeren String auswerten.
+      # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#job-context
       - name: actionlint
         env:
           ACTIONLINT_VERSION: "1.7.7"
         run: |
           bash <(curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/v$ACTIONLINT_VERSION/scripts/download-actionlint.bash") "$ACTIONLINT_VERSION"
-          ./actionlint -color
+          ./actionlint -color \
+            -ignore 'property "workflow_(repository|sha|ref|file_path)" is not defined in object type'

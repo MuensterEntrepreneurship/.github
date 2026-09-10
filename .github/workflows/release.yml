@@ -139,6 +139,9 @@ jobs:
 
       - name: Tools-Anzeige gegen ENABLED_TOOLS prüfen
         run: |
+          # ${...} in der letzten Zeile ist ein JS-Template-Literal. Die einfachen
+          # Anführungszeichen um das Skript sind deshalb Absicht, nicht ein Versehen.
+          # shellcheck disable=SC2016
           node -e '
             const m = require("./manifest.json");
             const enabled = m.server?.mcp_config?.env?.ENABLED_TOOLS;
@@ -229,7 +232,7 @@ jobs:
             echo "$SLUG" >> "$DIST/slugs.txt"
           fi
           echo "Gebaut:"; ls -1 "$DIST"/*.mcpb
-          echo "files=$(cd "$DIST" && ls -1 *.mcpb | tr '\n' ' ' | sed 's/ $//')" >> "$GITHUB_OUTPUT"
+          echo "files=$(cd "$DIST" && printf '%s\n' *.mcpb | tr '\n' ' ' | sed 's/ $//')" >> "$GITHUB_OUTPUT"
 
       # Im neuen Repo liegen .github/ (Aufrufer-Workflow), LICENSE, .gitignore,
       # ggf. dist/ und ggf. .claude/ (lokale Claude-Code-Konfiguration) IM
@@ -355,7 +358,7 @@ jobs:
           # Rolling-Release: tote Downloads, die aktuell aussahen. Also raus mit allem,
           # was dieser Lauf nicht baut, bevor hochgeladen wird.
           if gh release view "$LATEST_TAG" >/dev/null 2>&1; then
-            KEEP=" $(cd "$DIST/latest" && ls -1 *.mcpb | tr '\n' ' ')"
+            KEEP=" $(cd "$DIST/latest" && printf '%s\n' *.mcpb | tr '\n' ' ')"
             for ASSET in $(gh release view "$LATEST_TAG" --json assets --jq '.assets[].name'); do
               case "$KEEP" in
                 *" $ASSET "*) ;;
