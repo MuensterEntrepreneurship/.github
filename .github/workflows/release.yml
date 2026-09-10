@@ -1,0 +1,419 @@
+name: release
+
+# Wiederverwendbarer Release-Workflow für die mcp-*-Repos der Org. Baut die
+# Claude-Desktop-Extension (.mcpb) des AUFRUFENDEN Repos aus einem Tag v<version>,
+# testet die Installation, erstellt das Release v<version> und zieht das
+# Rolling-Release `latest` nach. Die gebauten Bundles gehen als Artefakt an den
+# zweiten wiederverwendbaren Workflow (publish-sciebo.yml) - derselbe Lauf, dieselben
+# Bytes, kein erneuter Download.
+#
+# Kontext-Regel: In einem wiederverwendbaren Workflow gehören `github.*`, die
+# GITHUB_*-Umgebungsvariablen, `secrets`, `vars` und der Checkout immer dem
+# AUFRUFER. GITHUB_REF_NAME ist also der Tag des Extension-Repos (v0.1.1),
+# GITHUB_REPOSITORY dessen Name. Aus dem .github-Repo wird nichts ausgecheckt -
+# ein wiederverwendbarer Workflow kennt seine eigene Ref nicht zuverlässig -,
+# deshalb liegt apply_variant.mjs unten inline im Schritt.
+#
+# Der Slug (sciebo-files, uni-mail, ...) ist Pflicht-Eingabe und wird NIE aus dem
+# Repo-Namen abgeleitet: das Repo heißt mcp-sciebo, die Dateien heißen weiter
+# sciebo-files-v<version>.mcpb. Er ist Präfix aller Dateinamen und - im
+# Sciebo-Schritt - das einzige Kriterium, welche Dateien dort gelöscht werden dürfen.
+#
+# Aufruf (Extension-Repo, .github/workflows/release.yml): Beispiel im README dieses Repos.
+
+on:
+  workflow_call:
+    inputs:
+      slug:
+        description: "Kurzname des Bundles und Präfix aller Dateinamen, z.B. sciebo-files. Muss ^[a-z0-9]+(-[a-z0-9]+)*$ entsprechen."
+        required: true
+        type: string
+    outputs:
+      slug:
+        description: "Der validierte Slug - Job 2 bekommt genau diesen Wert, nicht noch einmal ein Literal"
+        value: ${{ jobs.release.outputs.slug }}
+      version:
+        description: "Version ohne v-Präfix, aus dem Tag"
+        value: ${{ jobs.release.outputs.version }}
+      files:
+        description: "Gebaute Bundle-Dateinamen, durch Leerzeichen getrennt"
+        value: ${{ jobs.release.outputs.files }}
+      artifact:
+        description: "Name des Artefakts mit den gebauten .mcpb"
+        value: mcpb-bundles
+
+# Der Aufrufer muss contents: write gewähren (Release, Assets, Tag-Push). Ein
+# aufgerufener Workflow kann Rechte nur einschränken, nie erweitern - fehlt das
+# Recht beim Aufrufer, bricht der Lauf sofort mit klarer Meldung ab. Neue Repos
+# haben GITHUB_TOKEN standardmäßig nur lesend, deshalb steht es im Aufrufer explizit.
+permissions:
+  contents: write
+
+env:
+  MCPB_VERSION: "2.1.2"   # npm @anthropic-ai/mcpb - gepinnt, damit ein Bau reproduzierbar bleibt
+  UV_VERSION: "0.12.12"   # https://astral.sh/uv/<version>/install.sh - dito
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # shell: bash explizit als Default, damit -o pipefail in JEDEM run:-Schritt
+    # gilt (nicht nur implizit auf ubuntu-latest) - der Installationstest unten
+    # verlässt sich darauf.
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      slug: ${{ steps.parse.outputs.slug }}
+      version: ${{ steps.parse.outputs.version }}
+      files: ${{ steps.pack.outputs.files }}
+    steps:
+      # Zuerst prüfen, noch vor dem Checkout: ein falscher Slug oder ein Tag im
+      # falschen Schema soll scheitern, bevor irgendetwas passiert.
+      - name: Slug und Tag prüfen
+        id: parse
+        env:
+          SLUG: ${{ inputs.slug }}
+        run: |
+          if ! [[ "$SLUG" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+            echo "::error::Ungültiger slug '$SLUG' - erlaubt ist ^[a-z0-9]+(-[a-z0-9]+)*\$"
+            exit 1
+          fi
+          # `on: push: tags: [v*]` beim Aufrufer trifft auch v1 oder version-x;
+          # hier wird deshalb strikt v<major>.<minor>.<patch>[-pre] verlangt.
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::Kein Tag ($GITHUB_REF_TYPE: $GITHUB_REF) - dieser Workflow läuft nur auf Tags v<version>"
+            exit 1
+          fi
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' passt nicht zu v<major>.<minor>.<patch>[-prerelease]"
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Slug: $SLUG - Version: $VERSION - Repo: $GITHUB_REPOSITORY"
+
+      # Checkt das AUFRUFENDE Repo am Tag aus (github.repository / github.ref sind
+      # die des Aufrufers). Tiefe 1 genügt: `git tag -f latest` markiert HEAD, und
+      # `git push -f` braucht den bisherigen Stand von `latest` nicht zu kennen.
+      # persist-credentials bleibt an (Default) - der Tag-Push hängt daran.
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Manifest gegen Tag prüfen
+        env:
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          if [ ! -f manifest.json ]; then
+            echo "::error::Keine manifest.json im Wurzelverzeichnis - das Repo IST das Bundle-Verzeichnis"
+            exit 1
+          fi
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+            echo "::error::Tag-Version '$VERSION' passt nicht zur manifest.json-Version '$MANIFEST_VERSION'"
+            exit 1
+          fi
+          # Dieselbe Prüfung für pyproject.toml: genau dieser Drift lief bei
+          # github-access schon einmal auseinander (Version 1.2.0 in manifest.json,
+          # 1.1.1 in pyproject.toml).
+          PYPROJECT_VERSION=$(python3 -c 'import tomllib,sys; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          if [ "$PYPROJECT_VERSION" != "$VERSION" ]; then
+            echo "::error::Tag-Version '$VERSION' passt nicht zur pyproject.toml-Version '$PYPROJECT_VERSION'"
+            exit 1
+          fi
+
+      - name: Manifest validieren
+        run: npx --yes "@anthropic-ai/mcpb@$MCPB_VERSION" validate manifest.json
+
+      - name: Tools-Anzeige gegen ENABLED_TOOLS prüfen
+        run: |
+          node -e '
+            const m = require("./manifest.json");
+            const enabled = m.server?.mcp_config?.env?.ENABLED_TOOLS;
+            if (!enabled || !m.tools) process.exit(0);  // nicht jede Extension hat beides
+            const a = new Set(enabled.split(","));
+            const b = new Set(m.tools.map(t => t.name));
+            const onlyEnv = [...a].filter(x => !b.has(x));
+            const onlyTools = [...b].filter(x => !a.has(x));
+            if (onlyEnv.length || onlyTools.length) {
+              console.error("tools[] und ENABLED_TOOLS sind nicht synchron.");
+              console.error("nur in ENABLED_TOOLS:", onlyEnv);
+              console.error("nur in tools[]:", onlyTools);
+              process.exit(1);
+            }
+            console.log(`OK: ${b.size} Tools synchron.`);
+          '
+
+      # apply_variant.mjs liegt inline, weil dieser Workflow das .github-Repo nicht
+      # auschecken kann (siehe Kopf). Heredoc mit quotiertem Delimiter: die Shell
+      # expandiert nichts. Achtung beim Bearbeiten: Der Text darf NIRGENDS die
+      # GitHub-Ausdrucksklammer (Dollarzeichen plus zwei geschweifte Klammern) enthalten -
+# die würde der Expression-Parser von GitHub
+      # vor der Shell auswerten. Template-Literale mit einer Klammer (${x}) sind ok.
+      - name: Hilfsskript apply_variant.mjs bereitstellen
+        run: |
+          cat > "$RUNNER_TEMP/apply_variant.mjs" <<'APPLY_VARIANT_MJS'
+          // Patch an extension's manifest for one variant from its variants.json, in place.
+          //
+          // Used by the release workflow to build several .mcpb from one source: a Claude
+          // Desktop extension holds a single user_config, so one installation means one
+          // account. Where separate installations are wanted - so that each one reaches only
+          // its own account and keeps its own keychain entry - the difference between them is
+          // nothing but identity and prefilled defaults.
+          //
+          // Only these fields are touched: name, display_name, the leading sentence of the
+          // two descriptions, the default of the EWS endpoint, and the mailbox hint appended
+          // to every tool description. The hint matters because all variants export the same
+          // tool names, and the description is what a model reads when it picks between them.
+          //
+          //   node apply_variant.mjs <extension-dir> <variant-key>
+          // Lives inline in MuensterEntrepreneurship/.github/.github/workflows/release.yml;
+          // in the extension repos the extension dir is the repo root (".").
+
+          import { readFileSync, writeFileSync } from "node:fs";
+          import { join } from "node:path";
+
+          const [dir, key] = process.argv.slice(2);
+          if (!dir || !key) {
+            console.error("usage: apply_variant.mjs <extension-dir> <variant-key>");
+            process.exit(2);
+          }
+
+          const variantsPath = join(dir, "variants.json");
+          const manifestPath = join(dir, "manifest.json");
+          const { variants } = JSON.parse(readFileSync(variantsPath, "utf8"));
+          const variant = variants.find((entry) => entry.key === key);
+          if (!variant) {
+            console.error(
+              `no variant ${JSON.stringify(key)} in ${variantsPath}; ` +
+                `have: ${variants.map((v) => v.key).join(", ")}`,
+            );
+            process.exit(1);
+          }
+
+          const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+
+          manifest.name = variant.name;
+          manifest.display_name = variant.display_name;
+
+          // Say which mailbox this bundle is for, first thing, in both description fields.
+          const prefix = `${variant.mailbox}. `;
+          manifest.description = prefix + manifest.description;
+          manifest.long_description = prefix + manifest.long_description;
+
+          if (variant.ews_url) {
+            const field = manifest.user_config?.ews_url;
+            if (!field) {
+              console.error("manifest has no user_config.ews_url to prefill");
+              process.exit(1);
+            }
+            field.default = variant.ews_url;
+          }
+
+          // Every variant exports the same tool names, so the mailbox goes into each
+          // description - that line is the only thing distinguishing them in a tool list.
+          for (const tool of manifest.tools ?? []) {
+            tool.description = `${tool.description} [${variant.mailbox}]`;
+          }
+
+          writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+          console.log(
+            `${key}: name=${manifest.name} display_name=${manifest.display_name} ` +
+              `endpoint=${variant.ews_url ?? "(unverändert)"}`,
+          );
+          APPLY_VARIANT_MJS
+          node --check "$RUNNER_TEMP/apply_variant.mjs"
+
+      # Eine Extension kann Varianten haben: mehrere Bundles aus derselben Quelle,
+      # die sich nur in Identität und Vorbelegung unterscheiden (variants.json).
+      # Nötig, weil eine Installation genau eine user_config hat - ein Postfach je
+      # Installation, absichtlich getrennt. Ohne variants.json wird einmal gepackt.
+      #
+      # Ziel ist $RUNNER_TEMP/dist, NICHT ./dist: das Repo-Wurzelverzeichnis ist das
+      # Bundle-Verzeichnis. mcpb schließt zwar *.mcpb aus, aber nicht dist/ selbst -
+      # ein dist/ im Repo würde samt slugs.txt in jedes weitere Bundle gepackt.
+      - name: Pack .mcpb (je Variante, sonst einmal)
+        id: pack
+        env:
+          SLUG: ${{ steps.parse.outputs.slug }}
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          DIST="$RUNNER_TEMP/dist"
+          mkdir -p "$DIST"
+          : > "$DIST/slugs.txt"
+          if [ -f variants.json ]; then
+            cp manifest.json "$RUNNER_TEMP/manifest.orig.json"
+            for KEY in $(node -p "require('./variants.json').variants.map(v=>v.key).join('\n')"); do
+              # Der key wird Teil des Dateinamens - dieselbe Regel wie für den Slug.
+              if ! [[ "$KEY" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+                echo "::error::Ungültiger Varianten-key '$KEY' in variants.json"
+                exit 1
+              fi
+              cp "$RUNNER_TEMP/manifest.orig.json" manifest.json
+              node "$RUNNER_TEMP/apply_variant.mjs" . "$KEY"
+              npx --yes "@anthropic-ai/mcpb@$MCPB_VERSION" validate manifest.json
+              npx --yes "@anthropic-ai/mcpb@$MCPB_VERSION" pack . "$DIST/$SLUG-$KEY-v$VERSION.mcpb"
+              echo "$SLUG-$KEY" >> "$DIST/slugs.txt"
+            done
+            cp "$RUNNER_TEMP/manifest.orig.json" manifest.json
+          else
+            npx --yes "@anthropic-ai/mcpb@$MCPB_VERSION" pack . "$DIST/$SLUG-v$VERSION.mcpb"
+            echo "$SLUG" >> "$DIST/slugs.txt"
+          fi
+          echo "Gebaut:"; ls -1 "$DIST"/*.mcpb
+          echo "files=$(cd "$DIST" && ls -1 *.mcpb | tr '\n' ' ' | sed 's/ $//')" >> "$GITHUB_OUTPUT"
+
+      # Im neuen Repo liegen .github/ (Aufrufer-Workflow), LICENSE, .gitignore,
+      # ggf. dist/ und ggf. .claude/ (lokale Claude-Code-Konfiguration) IM
+      # Bundle-Verzeichnis. mcpb schließt .git, .gitignore, .mcpbignore, .env*,
+      # *.mcpb u.a. selbst aus - .github/, dist/ und .claude/ aber nicht. Die
+      # gehören in jede .mcpbignore; hier wird das nachgemessen statt gehofft.
+      - name: Bundle-Inhalt prüfen
+        run: |
+          for MCPB in "$RUNNER_TEMP"/dist/*.mcpb; do
+            echo "== $(basename "$MCPB")"
+            unzip -Z1 "$MCPB"
+            if unzip -Z1 "$MCPB" | grep -qE '^(\.github/|dist/|\.claude/)'; then
+              echo "::error::$(basename "$MCPB") enthält .github/, dist/ oder .claude/ - bitte in .mcpbignore aufnehmen"
+              exit 1
+            fi
+          done
+
+      # Ein Bundle kann fehlerfrei validieren und packen und sich trotzdem nicht
+      # installieren lassen: Claude Desktop entpackt es und lässt `uv` das Paket
+      # darin bauen. Fehlt dort etwas, das pyproject.toml erwartet, bricht der Bau
+      # ab - v0.1.0 von uni-mail scheiterte so an einer README, die .mcpbignore
+      # ausschließt. Deshalb wird jedes Bundle hier entpackt und gestartet.
+      # Fehlender Zugangsdaten wegen scheitern darf ein Server dabei, am Bauen nicht.
+      # Kein Release, kein Artefakt, bevor dieser Schritt durch ist.
+      - name: Bundles entpacken und starten
+        run: |
+          curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          uv --version
+          INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}'
+          for MCPB in "$RUNNER_TEMP"/dist/*.mcpb; do
+            DIR=$(mktemp -d)
+            unzip -q "$MCPB" -d "$DIR"
+            # uv.lock muss zu pyproject.toml passen, bevor hier irgendetwas gebaut
+            # wird - sonst löst uv beim Nutzer still neu auf, statt hier zu scheitern.
+            uv lock --check --directory "$DIR"
+            ENTRY=$(node -p "require('$DIR/manifest.json').server.mcp_config.args.at(-1)")
+            # Die Shell läuft mit -o pipefail, weil der Job oben `shell: bash` als
+            # Default setzt; das `|| true` gilt für die ganze Pipeline, ausgewertet
+            # wird danach die Ausgabe, nicht der Exit-Code.
+            OUT=$(printf '%s\n' "$INIT" | uv run --directory "$DIR" "$ENTRY" 2>&1 | head -c 6000 || true)
+            if printf '%s' "$OUT" | grep -qiE 'Failed to build|build backend returned an error|No solution found|Readme file does not exist'; then
+              echo "::error::$(basename "$MCPB") lässt sich nicht installieren - der Paketbau im entpackten Bundle scheitert:"
+              printf '%s\n' "$OUT"
+              exit 1
+            fi
+            if printf '%s' "$OUT" | grep -q '"serverInfo"'; then
+              echo "OK: $(basename "$MCPB") - Server antwortet auf initialize"
+            else
+              echo "OK: $(basename "$MCPB") - gebaut; kein initialize (fehlende Zugangsdaten, hier erwartet)"
+            fi
+          done
+
+      # Ab hier sind die Bundles geprüft. Das Artefakt trägt genau die Bytes, die
+      # gleich ans Release gehen; der Sciebo-Job lädt es im selben Lauf herunter.
+      # 7 Tage genügen für einen "Re-run failed jobs" des Sciebo-Jobs; danach heißt
+      # ein erneuter Spiegel: neu taggen.
+      - name: Bundles als Artefakt für den Sciebo-Job sichern
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcpb-bundles
+          path: ${{ runner.temp }}/dist/*.mcpb
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          # Artefakte sind je Lauf unveränderlich; ohne overwrite würde ein
+          # "Re-run failed jobs" dieses Jobs genau an diesem Schritt scheitern.
+          overwrite: true
+
+      # Der Tag existiert schon (er hat den Lauf ausgelöst), gh hängt das Release
+      # daran. Existiert auch das Release schon - Wiederholungslauf nach einem
+      # Fehler weiter hinten -, werden die Assets ersetzt statt abzubrechen; sonst
+      # müsste man das Release von Hand löschen, bevor `latest` und sciebo je
+      # nachgezogen würden.
+      - name: Release v<version> erstellen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLUG: ${{ steps.parse.outputs.slug }}
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          TAG="v$VERSION"
+          NOTES="Installation: \`.mcpb\`-Datei laden und doppelklicken. Details im [README]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY#readme)."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG existiert bereits - die Assets werden durch diesen Bau ersetzt"
+            gh release upload "$TAG" "$RUNNER_TEMP"/dist/*.mcpb --clobber
+          else
+            gh release create "$TAG" "$RUNNER_TEMP"/dist/*.mcpb \
+              --verify-tag \
+              --title "$SLUG v$VERSION" \
+              --notes "$NOTES"
+          fi
+
+      # Ein Rolling-Release `latest` je Repo, an dem ALLE Bundles der Version hängen.
+      # Die Dateinamen tragen -latest statt der Version, damit die Download-URLs über
+      # Versionen hinweg stabil bleiben: <slug>-latest.mcpb bzw. <slug>-<key>-latest.mcpb.
+      #
+      # Erster Lauf im frischen Repo: `gh release view latest` schlägt fehl, also wird
+      # nach dem Tag-Push per `gh release create` angelegt. Ein von Hand gepushter Tag
+      # `latest` löst nichts aus (der Aufrufer hört nur auf v*) und wird beim nächsten
+      # Release hier mit -f überschrieben.
+      - name: Rolling-Release latest nachziehen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLUG: ${{ steps.parse.outputs.slug }}
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          DIST="$RUNNER_TEMP/dist"
+          LATEST_TAG="latest"
+          mkdir -p "$DIST/latest"
+          while read -r BUNDLE_SLUG; do
+            [ -n "$BUNDLE_SLUG" ] || continue
+            # Bei Varianten heißt das Bundle <slug>-<key>-v<version>.mcpb, sonst <slug>-v<version>.mcpb.
+            cp "$DIST/$BUNDLE_SLUG-v$VERSION.mcpb" "$DIST/latest/$BUNDLE_SLUG-latest.mcpb"
+          done < "$DIST/slugs.txt"
+          echo "Am Rolling-Release:"; ls -1 "$DIST/latest"
+          NOTES="Zeigt immer auf die neueste Version. Aktuell: **v$VERSION** ([Änderungsstand]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$VERSION)). Bei mehreren Dateien die zum eigenen Postfach passende laden."
+          # Leichtgewichtiger Tag auf HEAD (= Commit des Release-Tags), keine Git-Identität nötig.
+          # Der Push mit GITHUB_TOKEN löst keinen weiteren Workflow aus - gewollt.
+          git tag -f "$LATEST_TAG"
+          git push -f origin "$LATEST_TAG"
+          # Der Upload unten überschreibt (--clobber), entfernt aber nichts. Genau daran
+          # hingen früher Dateien aus umbenannten Varianten noch Versionen später am
+          # Rolling-Release: tote Downloads, die aktuell aussahen. Also raus mit allem,
+          # was dieser Lauf nicht baut, bevor hochgeladen wird.
+          if gh release view "$LATEST_TAG" >/dev/null 2>&1; then
+            KEEP=" $(cd "$DIST/latest" && ls -1 *.mcpb | tr '\n' ' ')"
+            for ASSET in $(gh release view "$LATEST_TAG" --json assets --jq '.assets[].name'); do
+              case "$KEEP" in
+                *" $ASSET "*) ;;
+                *) echo "Veraltetes Asset entfernen: $ASSET"
+                   gh release delete-asset "$LATEST_TAG" "$ASSET" --yes ;;
+              esac
+            done
+            gh release edit "$LATEST_TAG" --title "$SLUG latest (v$VERSION)" --notes "$NOTES" --latest=false
+            gh release upload "$LATEST_TAG" "$DIST"/latest/*.mcpb --clobber
+          else
+            gh release create "$LATEST_TAG" "$DIST"/latest/*.mcpb --title "$SLUG latest (v$VERSION)" --notes "$NOTES" --latest=false
+          fi
+
+      - name: Zusammenfassung
+        env:
+          SLUG: ${{ steps.parse.outputs.slug }}
+          VERSION: ${{ steps.parse.outputs.version }}
+          FILES: ${{ steps.pack.outputs.files }}
+        run: |
+          {
+            echo "## $SLUG v$VERSION"
+            echo
+            echo "- Release: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$VERSION"
+            echo "- Rolling: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/latest"
+            echo "- Bundles: $FILES"
+          } >> "$GITHUB_STEP_SUMMARY"
