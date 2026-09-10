@@ -46,7 +46,7 @@ jobs:
 - Optional: `variants.json` für mehrere Bundles aus einer Quelle
 - `.mcpbignore` mit mindestens `.github/`, `dist/`, `.claude/`
 - Version identisch in `manifest.json`, `pyproject.toml` (und `__init__.py` falls vorhanden) und Tag `v<version>`
-- Repository-Secrets: `SCIEBO_WEBDAV_BASE`, `SCIEBO_USER`, `SCIEBO_APP_PASSWORD`
+- Repository-Secrets: `SCIEBO_WEBDAV_BASE` (nur der Host, z. B. `https://uni-muenster.sciebo.de`; das Skript ergänzt `/remote.php/dav/files/<SCIEBO_USER>`, die volle Dateien-Wurzel wird ebenfalls angenommen), `SCIEBO_USER` (der sciebo-Login), `SCIEBO_APP_PASSWORD` (App-Passwort aus sciebo, Einstellungen, Sicherheit)
 - Repository-Variable: `SCIEBO_FOLDER`
 - GitHub Actions müssen wiederverwendbare Workflows aus öffentlichen Repos der Organisation aufrufen dürfen
 

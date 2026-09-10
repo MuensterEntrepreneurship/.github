@@ -204,7 +204,9 @@ jobs:
             SLUG                 Kurzname der Extension, z.B. sciebo-files oder uni-mail
             OTHER_SLUGS          die übrigen bekannten Slugs, durch Leerzeichen getrennt
                                  (optional; kein Slug darf Präfix eines anderen sein)
-            SCIEBO_WEBDAV_BASE   https://<host>/remote.php/dav/files/<login>   (Secret)
+            SCIEBO_WEBDAV_BASE   https://<host> - das Skript ergänzt /remote.php/dav/files/<SCIEBO_USER>;
+                                 die volle Dateien-Wurzel https://<host>/remote.php/dav/files/<login>
+                                 wird ebenfalls angenommen und dann unverändert benutzt   (Secret)
             SCIEBO_FOLDER        Zielordner unterhalb der Basis                 (Variable)
             SCIEBO_USER          sciebo-Login                                   (Secret)
             SCIEBO_APP_PASSWORD  App-Passwort                                   (Secret)
@@ -315,6 +317,29 @@ jobs:
 
           # --- Umgebung und lokale Bundles ---------------------------------------------
 
+          DAV_FILES = "/remote.php/dav/files/"
+
+
+          def dav_root(base, user):
+              """WebDAV-Wurzel des Kontos aus SCIEBO_WEBDAV_BASE und SCIEBO_USER.
+
+              Kurzform https://<host>: /remote.php/dav/files/<login> wird angehängt, damit
+              der Login nur einmal (in SCIEBO_USER) gepflegt wird. Langform mit
+              /remote.php/dav/files/<login> bleibt unverändert - falls die interne
+              Nextcloud-Kennung einmal nicht der Login ist. Alles andere unter
+              /remote.php/ ist ein Irrtum (z.B. remote.php/webdav) und wird abgelehnt.
+              """
+              b = base.rstrip("/")
+              if DAV_FILES in b:
+                  return b
+              if "/remote.php" in b:
+                  raise ValueError("SCIEBO_WEBDAV_BASE: entweder nur https://<host> oder die volle "
+                                   "Dateien-Wurzel https://<host>/remote.php/dav/files/<login>")
+              if not user or "/" in user or user in (".", ".."):
+                  raise ValueError("SCIEBO_USER taugt nicht als Pfadsegment")
+              return b + DAV_FILES + user
+
+
           def read_env():
               global OTHER_SLUGS
               # Leer zählt als fehlend: eine nicht gesetzte GitHub-Variable expandiert zu "",
@@ -334,7 +359,12 @@ jobs:
               folder = os.environ["SCIEBO_FOLDER"].strip().strip("/")
               if not folder or any(seg.strip() in ("", ".", "..") for seg in folder.split("/")):
                   die("SCIEBO_FOLDER ungültig - leer, doppelte Schrägstriche oder '.'/'..'-Segmente")
-              return slug, base, folder, os.environ["SCIEBO_USER"], os.environ["SCIEBO_APP_PASSWORD"]
+              user = os.environ["SCIEBO_USER"]
+              try:
+                  root = dav_root(base, user)
+              except ValueError as exc:
+                  die(str(exc))
+              return slug, root, folder, user, os.environ["SCIEBO_APP_PASSWORD"]
 
 
           def collect_local(dist_dir, slug):
@@ -516,15 +546,17 @@ jobs:
               if not dry_run and not dist_dir:
                   die("DIST_DIR fehlt - ohne --dry-run ist das Verzeichnis mit den .mcpb Pflicht")
 
-              slug, base, folder, user, password = read_env()
-              target = join_target(base, folder)
+              slug, root, folder, user, password = read_env()
+              target = join_target(root, folder)
               dav = Dav(target, user, password)
               if IN_CI:
-                  # Die kodierte Basis (z.B. %40 statt @) weicht vom Secret ab und würde sonst
-                  # nicht maskiert. Die ::add-mask::-Zeile selbst erscheint nicht im Log.
-                  log("::add-mask::" + normalize_dav_url(base))
+                  # Kodierte Formen (z.B. %40 statt @) weichen von den Secrets ab und würden
+                  # sonst nicht maskiert. Die ::add-mask::-Zeilen selbst erscheinen nicht im Log.
+                  log("::add-mask::" + normalize_dav_url(root))
+                  log("::add-mask::" + urllib.parse.quote(user, safe=""))
                   log("::add-mask::" + dav.auth)
-              log(f"Ziel: {target}")  # unkodiert: das Secret ist wörtliches Präfix, GitHub maskiert es
+              # Unkodiert ausgeben: Basis und Login stehen wörtlich darin, GitHub maskiert beide.
+              log(f"Ziel: {target}")
               log(f"Slug: {slug}  - Eigentum: {slug}-*.mcpb, sonst nichts"
                   + (f"  - fremd: {', '.join(OTHER_SLUGS)}" if OTHER_SLUGS else ""))
               if dry_run:
@@ -730,6 +762,21 @@ jobs:
 
               ok(join_target("https://h/remote.php/dav/files/u@x.de/", "/A B/C/") ==
                  "https://h/remote.php/dav/files/u@x.de/A B/C", "join_target")
+              ok(dav_root("https://h", "u@x.de") == "https://h/remote.php/dav/files/u@x.de", "dav_root kurz")
+              ok(dav_root("https://h/", "u@x.de") == "https://h/remote.php/dav/files/u@x.de", "dav_root kurz mit Slash")
+              ok(dav_root("https://h/remote.php/dav/files/u%40x.de/", "u@x.de") ==
+                 "https://h/remote.php/dav/files/u%40x.de", "dav_root lang unverändert")
+              ok(dav_root("https://h/remote.php/dav/files/andere-kennung", "u@x.de") ==
+                 "https://h/remote.php/dav/files/andere-kennung", "dav_root lang gewinnt über SCIEBO_USER")
+              for bad_base, bad_user, what in [("https://h/remote.php/webdav", "u", "remote.php/webdav"),
+                                               ("https://h/remote.php/dav", "u", "remote.php/dav ohne files"),
+                                               ("https://h", "", "leerer Login"),
+                                               ("https://h", "a/b", "Login mit Slash")]:
+                  try:
+                      dav_root(bad_base, bad_user)
+                      ok(False, f"dav_root hat {what} akzeptiert")
+                  except ValueError:
+                      ok(True, "")
               ok(normalize_dav_url("https://h/remote.php/dav/files/u@x.de/A B/C/") ==
                  "https://h/remote.php/dav/files/u%40x.de/A%20B/C", "normalize_dav_url")
               ok(normalize_dav_url("https://h/remote.php/dav/files/u%40x.de/A%20B/C") ==
