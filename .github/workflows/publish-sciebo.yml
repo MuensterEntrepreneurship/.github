@@ -61,7 +61,7 @@ permissions:
 # einzige Grundlage ist, nach der ein Lauf entscheidet, welche Dateien er
 # löschen darf.
 env:
-  KNOWN_SLUGS: "confluence github-access sciebo-files uni-mail"
+  KNOWN_SLUGS: "confluence github-access sciebo uni-mail"
 
 jobs:
   publish:

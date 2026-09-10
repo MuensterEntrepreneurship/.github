@@ -25,7 +25,7 @@ jobs:
   release:
     uses: MuensterEntrepreneurship/.github/.github/workflows/release.yml@main
     with:
-      slug: sciebo-files
+      slug: sciebo
     secrets: inherit
     permissions:
       contents: write
@@ -56,7 +56,7 @@ jobs:
 |------|------------|
 | confluence | mcp-confluence |
 | github-access | mcp-github-access |
-| sciebo-files | mcp-sciebo |
+| sciebo | mcp-sciebo |
 | uni-mail | mcp-uni-mail |
 
 Der Slug ist das Präfix aller Bundle-Dateinamen (`<slug>-v<version>.mcpb`, mit Varianten `<slug>-<key>-v<version>.mcpb`) und das einzige Kriterium dafür, welche Dateien ein Repo im gemeinsamen sciebo-Ordner löschen darf. Slugs sind erforderliche Eingaben und werden nie vom Repository-Namen abgeleitet. Die Allowlist lebt in `publish-sciebo.yml` (`KNOWN_SLUGS`); eine neue Extension erfordert das Hinzufügen des Slugs dort. Kein Slug darf ein anderer Slug plus `-…` sein (in beide Richtungen); der Workflow prüft dies paarweise und lehnt ab.
