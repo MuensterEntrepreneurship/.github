@@ -14,11 +14,12 @@ name: publish-sciebo
 # Scheitert der PROPFIND, wird nichts gelöscht. Es gibt kein .version.json und
 # keine VERSIONS.md mehr; die Version steht im Dateinamen.
 #
-# `secrets.SCIEBO_*` und `vars.SCIEBO_FOLDER` lösen sich immer gegen das
-# AUFRUFENDE Repo auf, nie gegen dieses .github-Repo - jedes Extension-Repo
-# braucht die drei Secrets und die Variable selbst. Eine nicht gesetzte
-# Variable expandiert zu "" statt zu scheitern; das fängt die Vorprüfung im
-# ersten Schritt ab, statt in die Konto-Wurzel zu veröffentlichen.
+# `secrets.SCIEBO_*` und `vars.SCIEBO_*` lösen sich immer gegen das AUFRUFENDE
+# Repo auf, nie gegen dieses .github-Repo - jedes Extension-Repo braucht die
+# zwei Secrets (SCIEBO_USER, SCIEBO_APP_PASSWORD) und die zwei Variablen
+# (SCIEBO_BASE_URL = nur der Host, SCIEBO_FOLDER = Zielordner) selbst. Eine
+# nicht gesetzte Variable expandiert zu "" statt zu scheitern; das fängt die
+# Vorprüfung im ersten Schritt ab, statt in die Konto-Wurzel zu veröffentlichen.
 #
 # Namensregel (symmetrisch, wird unten geprüft): kein bekannter Slug darf
 # Präfix eines anderen sein, in keiner der beiden Richtungen - das Slug-Präfix
@@ -45,8 +46,8 @@ on:
         required: false
         type: string
         default: mcpb-bundles
-    # Keine secrets: hier - der Aufrufer nutzt "secrets: inherit"; ob SCIEBO_*
-    # tatsächlich gesetzt sind, prüft der erste Schritt zur Laufzeit.
+    # Keine secrets: hier - der Aufrufer nutzt "secrets: inherit"; ob SCIEBO_USER
+    # und SCIEBO_APP_PASSWORD tatsächlich gesetzt sind, prüft der erste Schritt.
 
 # Kein Checkout, kein gh: der Job braucht am Repo gar nichts. Das Artefakt des
 # eigenen Laufs wird über das Runtime-Token geladen, nicht über GITHUB_TOKEN.
@@ -75,8 +76,8 @@ jobs:
       - name: Slug, Allowlist und Konfiguration des Aufrufers prüfen
         env:
           SLUG: ${{ inputs.slug }}
+          SCIEBO_BASE_URL: ${{ vars.SCIEBO_BASE_URL }}
           SCIEBO_FOLDER: ${{ vars.SCIEBO_FOLDER }}
-          HAS_BASE: ${{ secrets.SCIEBO_WEBDAV_BASE != '' }}
           HAS_USER: ${{ secrets.SCIEBO_USER != '' }}
           HAS_PASSWORD: ${{ secrets.SCIEBO_APP_PASSWORD != '' }}
         run: |
@@ -119,11 +120,11 @@ jobs:
           done
           echo "OTHER_SLUGS=${OTHER# }" >> "$GITHUB_ENV"
 
-          # 5. Secrets und Variable des Aufrufers - Werte selbst bleiben außen vor
+          # 5. Secrets und Variablen des Aufrufers - Secret-Werte bleiben außen vor
           MISSING=""
-          [ "$HAS_BASE" = "true" ]     || MISSING="$MISSING SCIEBO_WEBDAV_BASE(secret)"
           [ "$HAS_USER" = "true" ]     || MISSING="$MISSING SCIEBO_USER(secret)"
           [ "$HAS_PASSWORD" = "true" ] || MISSING="$MISSING SCIEBO_APP_PASSWORD(secret)"
+          [ -n "$SCIEBO_BASE_URL" ]    || MISSING="$MISSING SCIEBO_BASE_URL(variable)"
           [ -n "$SCIEBO_FOLDER" ]      || MISSING="$MISSING SCIEBO_FOLDER(variable)"
           if [ -n "$MISSING" ]; then
             echo "::error::Im Repo $GITHUB_REPOSITORY nicht gesetzt:$MISSING - Settings > Secrets and variables > Actions"
@@ -133,6 +134,7 @@ jobs:
           # 6. Ausgabe
           echo "Slug: $SLUG"
           echo "Andere bekannte Slugs: ${OTHER# }"
+          echo "Basis: $SCIEBO_BASE_URL"
           echo "Zielordner: $SCIEBO_FOLDER"
 
       - name: Bundles aus dem Release-Job laden
@@ -176,7 +178,7 @@ jobs:
       # eigenes Repo nicht auschecken kann. Dieser Text darf nirgends eine
       # GitHub-Actions-Ausdrucksklammer (Dollarzeichen, zwei geschweifte
       # Klammern) enthalten. Der Vertrag des Skripts steht in seinem Docstring:
-      # Umgebung SLUG, OTHER_SLUGS, SCIEBO_WEBDAV_BASE, SCIEBO_FOLDER,
+      # Umgebung SLUG, OTHER_SLUGS, SCIEBO_BASE_URL, SCIEBO_FOLDER,
       # SCIEBO_USER, SCIEBO_APP_PASSWORD;
       # argv[1] = Verzeichnis mit den .mcpb-Dateien; kein MKCOL, der
       # Zielordner muss bereits existieren; scheitert der PROPFIND, wird
@@ -204,10 +206,11 @@ jobs:
             SLUG                 Kurzname der Extension, z.B. sciebo-files oder uni-mail
             OTHER_SLUGS          die übrigen bekannten Slugs, durch Leerzeichen getrennt
                                  (optional; kein Slug darf Präfix eines anderen sein)
-            SCIEBO_WEBDAV_BASE   https://<host> - das Skript ergänzt /remote.php/dav/files/<SCIEBO_USER>;
-                                 die volle Dateien-Wurzel https://<host>/remote.php/dav/files/<login>
-                                 wird ebenfalls angenommen und dann unverändert benutzt   (Secret)
-            SCIEBO_FOLDER        Zielordner unterhalb der Basis                 (Variable)
+            SCIEBO_BASE_URL      https://<host>, z.B. https://uni-muenster.sciebo.de   (Variable)
+                                 Das Skript ergänzt /remote.php/dav/files/<SCIEBO_USER>. Die volle
+                                 Dateien-Wurzel https://<host>/remote.php/dav/files/<login> wird
+                                 ebenfalls angenommen und dann unverändert benutzt.
+            SCIEBO_FOLDER        Zielordner unterhalb der Dateien-Wurzel        (Variable)
             SCIEBO_USER          sciebo-Login                                   (Secret)
             SCIEBO_APP_PASSWORD  App-Passwort                                   (Secret)
 
@@ -228,7 +231,7 @@ jobs:
           import zipfile
 
           IN_CI = os.environ.get("GITHUB_ACTIONS") == "true"
-          ENV_VARS = ("SLUG", "SCIEBO_WEBDAV_BASE", "SCIEBO_FOLDER", "SCIEBO_USER", "SCIEBO_APP_PASSWORD")
+          ENV_VARS = ("SLUG", "SCIEBO_BASE_URL", "SCIEBO_FOLDER", "SCIEBO_USER", "SCIEBO_APP_PASSWORD")
           SLUG_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
           # <slug>[-<variante>]-v<major>.<minor>.<patch>[-<prerelease>].mcpb
           # Prerelease nur mit Bindestrich (SemVer), damit "x-v1.0.0.mcpb.mcpb" nicht passt.
@@ -321,7 +324,7 @@ jobs:
 
 
           def dav_root(base, user):
-              """WebDAV-Wurzel des Kontos aus SCIEBO_WEBDAV_BASE und SCIEBO_USER.
+              """WebDAV-Wurzel des Kontos aus SCIEBO_BASE_URL und SCIEBO_USER.
 
               Kurzform https://<host>: /remote.php/dav/files/<login> wird angehängt, damit
               der Login nur einmal (in SCIEBO_USER) gepflegt wird. Langform mit
@@ -333,7 +336,7 @@ jobs:
               if DAV_FILES in b:
                   return b
               if "/remote.php" in b:
-                  raise ValueError("SCIEBO_WEBDAV_BASE: entweder nur https://<host> oder die volle "
+                  raise ValueError("SCIEBO_BASE_URL: entweder nur https://<host> oder die volle "
                                    "Dateien-Wurzel https://<host>/remote.php/dav/files/<login>")
               if not user or "/" in user or user in (".", ".."):
                   raise ValueError("SCIEBO_USER taugt nicht als Pfadsegment")
@@ -353,9 +356,9 @@ jobs:
               others = tuple(os.environ.get("OTHER_SLUGS", "").split())
               check_slug_family(slug, others)
               OTHER_SLUGS = others
-              base = os.environ["SCIEBO_WEBDAV_BASE"]  # bewusst nicht gestrippt: das Secret muss wörtlich im Log-Präfix stehen
+              base = os.environ["SCIEBO_BASE_URL"].strip()
               if not base.lower().startswith("https://"):
-                  die("SCIEBO_WEBDAV_BASE muss mit https:// beginnen (Basic Auth über http würde das Passwort offenlegen)")
+                  die("SCIEBO_BASE_URL muss mit https:// beginnen (Basic Auth über http würde das Passwort offenlegen)")
               folder = os.environ["SCIEBO_FOLDER"].strip().strip("/")
               if not folder or any(seg.strip() in ("", ".", "..") for seg in folder.split("/")):
                   die("SCIEBO_FOLDER ungültig - leer, doppelte Schrägstriche oder '.'/'..'-Segmente")
@@ -451,7 +454,7 @@ jobs:
                   is_coll = resp.find(".//{DAV:}resourcetype/{DAV:}collection") is not None
                   entries.append({"name": rest, "is_collection": is_coll})
               if responses and not self_seen:
-                  raise ValueError("PROPFIND-Antwort passt nicht zur Basis-URL - SCIEBO_WEBDAV_BASE muss "
+                  raise ValueError("PROPFIND-Antwort passt nicht zur Basis-URL - die Dateien-Wurzel muss "
                                    "https://<host>/remote.php/dav/files/<login> sein, nicht remote.php/webdav")
               return sorted(entries, key=lambda e: e["name"])
 
@@ -550,12 +553,11 @@ jobs:
               target = join_target(root, folder)
               dav = Dav(target, user, password)
               if IN_CI:
-                  # Kodierte Formen (z.B. %40 statt @) weichen von den Secrets ab und würden
-                  # sonst nicht maskiert. Die ::add-mask::-Zeilen selbst erscheinen nicht im Log.
-                  log("::add-mask::" + normalize_dav_url(root))
+                  # Der Login ist ein Secret; seine kodierte Form (%40 statt @) weicht davon ab
+                  # und würde sonst nicht maskiert. Die ::add-mask::-Zeilen selbst erscheinen nicht im Log.
                   log("::add-mask::" + urllib.parse.quote(user, safe=""))
                   log("::add-mask::" + dav.auth)
-              # Unkodiert ausgeben: Basis und Login stehen wörtlich darin, GitHub maskiert beide.
+              # Unkodiert ausgeben: der Login steht wörtlich darin, GitHub maskiert ihn.
               log(f"Ziel: {target}")
               log(f"Slug: {slug}  - Eigentum: {slug}-*.mcpb, sonst nichts"
                   + (f"  - fremd: {', '.join(OTHER_SLUGS)}" if OTHER_SLUGS else ""))
@@ -828,7 +830,7 @@ jobs:
           SLUG: ${{ inputs.slug }}
           # OTHER_SLUGS kommt bereits aus $GITHUB_ENV des ersten Schritts und
           # muss hier nicht erneut zugeordnet werden.
-          SCIEBO_WEBDAV_BASE: ${{ secrets.SCIEBO_WEBDAV_BASE }}
+          SCIEBO_BASE_URL: ${{ vars.SCIEBO_BASE_URL }}
           SCIEBO_FOLDER: ${{ vars.SCIEBO_FOLDER }}
           SCIEBO_USER: ${{ secrets.SCIEBO_USER }}
           SCIEBO_APP_PASSWORD: ${{ secrets.SCIEBO_APP_PASSWORD }}
