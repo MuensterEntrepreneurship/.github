@@ -74,16 +74,16 @@ jobs:
       slug: ${{ matrix.slug }}
       mode: fixed
       ext: plugin
-      artifact: plugin-bundles
+      artifact: plugin-bundles-${{ matrix.slug }}
     secrets: inherit
     permissions:
       contents: read
 ```
 
-Zu beachten: der Modus `fixed` erwartet im heruntergeladenen Artefakt genau eine `.<ext>`, und zwar
-`<slug>.<ext>`. Enthält ein gemeinsames Artefakt die Bundles aller drei Plugins, bricht jeder
-Matrix-Job in der Vorprüfung ab. Der Build-Job muss also je Slug ein eigenes Artefakt ablegen und
-dessen Name hier eingesetzt werden, etwa `artifact: plugin-bundles-${{ matrix.slug }}`.
+Ein Artefakt je Slug, nicht ein gemeinsames: der Modus `fixed` erwartet im heruntergeladenen
+Artefakt genau eine `.<ext>`, und zwar `<slug>.<ext>`. Jeder Matrix-Job lädt das Artefakt
+vollständig herunter, ein gemeinsames Artefakt mit den Bundles aller drei Plugins bricht deshalb in
+der Vorprüfung ab. Der Build-Job muss die drei Bundles also getrennt hochladen.
 
 ## Secrets und Variablen des aufrufenden Repositories
 
