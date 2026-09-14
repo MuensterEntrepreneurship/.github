@@ -1,21 +1,30 @@
 #!/usr/bin/env python3
-"""publish_sciebo.py - EINE Extension nach sciebo, sonst nichts.
+"""publish_sciebo.py - EINE Extension bzw. EIN Plugin nach sciebo, sonst nichts.
 
-Lädt die gerade gebauten .mcpb einer Extension in den sciebo-Ordner und entfernt
-danach die überholten Bundles DERSELBEN Extension. Alles andere im Ordner gehört
+Lädt die gerade gebauten Bundles eines Slugs in den sciebo-Ordner und entfernt
+danach die überholten Dateien DESSELBEN Slugs. Alles andere im Ordner gehört
 anderen Repos und wird nie angefasst. Es gibt keine Zustandsdatei mehr: die
-Ordnerliste ist der Zustand, die Version steht im Dateinamen.
+Ordnerliste ist der Zustand.
 
-Eigentum = Dateiname beginnt mit "<slug>-" und endet auf ".mcpb" - und beginnt
-NICHT mit "<anderer-slug>-" für einen der übrigen bekannten Slugs. Nur das.
+Zwei Modi, ein Ablauf:
+  versioned  Die Version steht im Dateinamen (<slug>[-<variante>]-v<x.y.z>.<ext>),
+             jeder Lauf legt neue Dateien an und räumt die Vorgänger weg.
+  fixed      Ein fester Dateiname ohne Version (<slug>.<ext>), jeder Lauf
+             überschreibt ihn. Ein stabiler Link bleibt damit gültig.
+
+Eigentum = Dateiname endet auf ".<ext>", beginnt mit "<slug>-" - im Modus fixed
+zusätzlich der blosse Name "<slug>.<ext>" - und beginnt NICHT mit
+"<anderer-slug>-" für einen der übrigen bekannten Slugs. Nur das.
 
 Aufruf:
-  publish_sciebo.py DIST_DIR              DIST_DIR/*.mcpb hochladen, dann aufräumen
+  publish_sciebo.py DIST_DIR              DIST_DIR/*.<ext> hochladen, dann aufräumen
   publish_sciebo.py --dry-run [DIST_DIR]  nur PROPFIND; zeigt, was passieren würde
   publish_sciebo.py --self-test           Offline-Prüfung der Schutzlogik, kein Netz
 
 Umgebung:
-  SLUG                 Kurzname der Extension, z.B. sciebo oder uni-mail
+  SLUG                 Kurzname der Extension bzw. des Plugins, z.B. sciebo oder ent-thesis
+  MODE                 versioned (Standard) oder fixed
+  EXT                  Dateiendung ohne Punkt: mcpb (Standard) oder plugin
   OTHER_SLUGS          die übrigen bekannten Slugs, durch Leerzeichen getrennt
                        (optional; kein Slug darf Präfix eines anderen sein)
   SCIEBO_BASE_URL      https://<host>, z.B. https://uni-muenster.sciebo.de   (Variable)
@@ -46,11 +55,18 @@ import zipfile
 IN_CI = os.environ.get("GITHUB_ACTIONS") == "true"
 ENV_VARS = ("SLUG", "SCIEBO_BASE_URL", "SCIEBO_FOLDER", "SCIEBO_USER", "SCIEBO_APP_PASSWORD")
 SLUG_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
-# <slug>[-<variante>]-v<major>.<minor>.<patch>[-<prerelease>].mcpb
+MODES = ("versioned", "fixed")
+EXTS = ("mcpb", "plugin")
+# Wo im ZIP das Manifest liegt, aus dem geprüft wird, dass das Bundle wirklich
+# zu diesem Slug gehört.
+MANIFEST_IN_BUNDLE = {"mcpb": "manifest.json", "plugin": ".claude-plugin/plugin.json"}
+# <slug>[-<variante>]-v<major>.<minor>.<patch>[-<prerelease>].<ext>
 # Prerelease nur mit Bindestrich (SemVer), damit "x-v1.0.0.mcpb.mcpb" nicht passt.
 BUNDLE_RE_TEMPLATE = (r"{slug}(?P<variant>-[a-z0-9]+)?-v(?P<version>[0-9]+\.[0-9]+\.[0-9]+"
-                      r"(-[0-9A-Za-z][0-9A-Za-z.-]*)?)\.mcpb")
+                      r"(-[0-9A-Za-z][0-9A-Za-z.-]*)?)\.{ext}")
 OTHER_SLUGS = ()  # wird in read_env() gesetzt; owns_file() nimmt alternativ `others`
+MODE = "versioned"  # wird in read_env() gesetzt; owns_file()/family_of() nehmen alternativ `mode`
+EXT = "mcpb"        # wird in read_env() gesetzt; die Funktionen nehmen alternativ `ext`
 
 
 def log(msg):
@@ -68,25 +84,49 @@ def die(msg, code=1):
 
 # --- Eigentum: die eine Funktion, die entscheidet ---------------------------
 
-def owns_file(slug, name, others=None):
-    """True genau dann, wenn NAME ein Bundle dieser Extension ist.
+def resolve_mode_ext(mode, ext):
+    """Modus und Endung auflösen (None = Globals) und gegen die Listen prüfen.
 
-    Präfix "<slug>-" und Suffix ".mcpb", sonst nichts. Absichtlich kein Regex auf
+    Ein unbekannter Modus oder eine unbekannte Endung ist ein Programmierfehler
+    und wirft - genau wie ein ungültiger Slug. Stillschweigend auf den Standard
+    zurückzufallen hiesse, im falschen Namensraum aufzuräumen.
+    """
+    mode = MODE if mode is None else mode
+    ext = EXT if ext is None else ext
+    if mode not in MODES:
+        raise ValueError(f"ungültiger Modus: {mode!r} - erlaubt: {', '.join(MODES)}")
+    if ext not in EXTS:
+        raise ValueError(f"ungültige Endung: {ext!r} - erlaubt: {', '.join(EXTS)}")
+    return mode, ext
+
+
+def owns_file(slug, name, others=None, mode=None, ext=None):
+    """True genau dann, wenn NAME eine Datei dieses Slugs ist.
+
+    Präfix "<slug>-" und Suffix ".<ext>", sonst nichts. Absichtlich kein Regex auf
     die Version: auch ein von Hand abgelegtes "uni-mail-test.mcpb" gehört uni-mail
     und darf von uni-mail weggeräumt werden - "uni-mailer-v1.0.0.mcpb" aber nie,
     und "VERSIONS.md" oder ".version.json" erst recht nicht.
 
+    Im Modus fixed gehört zusätzlich der blosse Name "<slug>.<ext>" dazu: dort
+    trägt der Dateiname keine Version. Das Präfix "<slug>-" bleibt auch dort
+    eigen, damit ein Lauf die versionierten Altlasten desselben Slugs aufräumen
+    kann, statt sie liegen zu lassen.
+
     Beginnt der Name mit "<other>-" für einen anderen bekannten Slug, gehört er
-    nie dieser Extension - auch dann nicht, wenn er zugleich mit "<slug>-" beginnt.
+    nie diesem Slug - auch dann nicht, wenn er zugleich mit "<slug>-" beginnt.
     """
     if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug):
         raise ValueError(f"ungültiger Slug: {slug!r}")
+    mode, ext = resolve_mode_ext(mode, ext)
     others = OTHER_SLUGS if others is None else tuple(others)
     if not isinstance(name, str) or not name:
         return False
     if "/" in name or "\\" in name or name in (".", ".."):
         return False
-    if not (name.startswith(slug + "-") and name.endswith(".mcpb")):
+    if not name.endswith("." + ext):
+        return False
+    if not (name.startswith(slug + "-") or (mode == "fixed" and name == f"{slug}.{ext}")):
         return False
     for other in others:
         if other != slug and name.startswith(other + "-"):
@@ -94,25 +134,34 @@ def owns_file(slug, name, others=None):
     return True
 
 
-def guard_owned(slug, name):
+def guard_owned(slug, name, ext=None):
     """Re-Assertion unmittelbar vor jedem DELETE: wirft, statt zu löschen.
 
     Absichtlich kein `assert` - das fällt unter `python3 -O` weg.
     """
-    if not owns_file(slug, name):
+    _, ext = resolve_mode_ext(None, ext)
+    if not owns_file(slug, name, ext=ext):
         raise RuntimeError(f"Schutz ausgelöst: {name!r} gehört nicht zu {slug!r} - kein DELETE")
-    if not name.endswith(".mcpb"):
-        raise RuntimeError(f"Schutz ausgelöst: {name!r} ist keine .mcpb - kein DELETE")
+    if not name.endswith("." + ext):
+        raise RuntimeError(f"Schutz ausgelöst: {name!r} ist keine .{ext} - kein DELETE")
     return True
 
 
-def bundle_re(slug):
-    return re.compile(BUNDLE_RE_TEMPLATE.format(slug=re.escape(slug)))
+def bundle_re(slug, ext=None):
+    ext = EXT if ext is None else ext
+    return re.compile(BUNDLE_RE_TEMPLATE.format(slug=re.escape(slug), ext=re.escape(ext)))
 
 
-def family_of(slug, name):
-    """'uni-mail-exchange-v1.1.1.mcpb' -> 'uni-mail-exchange'; ohne Schema -> None."""
-    m = bundle_re(slug).fullmatch(name)
+def family_of(slug, name, mode=None, ext=None):
+    """'uni-mail-exchange-v1.1.1.mcpb' -> 'uni-mail-exchange'; ohne Schema -> None.
+
+    Im Modus fixed gibt es nur einen Dateinamen je Slug, der Namensraum ist also
+    genau eine Familie: alles Eigene gehört zu 'slug', alles andere zu keiner.
+    """
+    mode, ext = resolve_mode_ext(mode, ext)
+    if mode == "fixed":
+        return slug if owns_file(slug, name, mode=mode, ext=ext) else None
+    m = bundle_re(slug, ext).fullmatch(name)
     if not m:
         return None
     return slug + (m.group("variant") or "")
@@ -157,7 +206,7 @@ def dav_root(base, user):
 
 
 def read_env():
-    global OTHER_SLUGS
+    global OTHER_SLUGS, MODE, EXT
     # Leer zählt als fehlend: eine nicht gesetzte GitHub-Variable expandiert zu "",
     # und ein leerer Ordner hieße "in die Kontowurzel veröffentlichen".
     missing = [v for v in ENV_VARS if not os.environ.get(v, "").strip()]
@@ -166,6 +215,16 @@ def read_env():
     slug = os.environ["SLUG"].strip()
     if not SLUG_RE.fullmatch(slug):
         die(f"SLUG {slug!r} ungültig - erlaubt: Kleinbuchstaben, Ziffern, einzelne Bindestriche")
+    # Modus und Endung zuerst: sie bestimmen, was dieser Lauf als eigen ansieht.
+    mode = os.environ.get("MODE", "").strip() or MODES[0]
+    if mode not in MODES:
+        die(f"MODE {mode!r} ungültig - erlaubt: {', '.join(MODES)}")
+    ext = os.environ.get("EXT", "").strip() or EXTS[0]
+    if ext.startswith("."):
+        ext = ext[1:]
+    if ext not in EXTS:
+        die(f"EXT {ext!r} ungültig - erlaubt: {', '.join(EXTS)}")
+    MODE, EXT = mode, ext
     others = tuple(os.environ.get("OTHER_SLUGS", "").split())
     check_slug_family(slug, others)
     OTHER_SLUGS = others
@@ -183,41 +242,65 @@ def read_env():
     return slug, root, folder, user, os.environ["SCIEBO_APP_PASSWORD"]
 
 
+def read_manifest(path, ext):
+    """Manifest aus dem Bundle lesen: manifest.json (.mcpb), .claude-plugin/plugin.json (.plugin).
+
+    Wirft zipfile.BadZipFile (kein ZIP), KeyError (Manifest fehlt) oder ValueError
+    (kein lesbares JSON) - der Aufrufer bricht darauf ab.
+    """
+    with zipfile.ZipFile(path) as z:
+        return json.loads(z.read(MANIFEST_IN_BUNDLE[ext]))
+
+
 def collect_local(dist_dir, slug):
-    """Alle DIST_DIR/*.mcpb - jede muss zum Slug und zum Namensschema passen,
-    sonst Abbruch, bevor sciebo berührt wird (HARD GUARD 1)."""
+    """Alle DIST_DIR/*.<ext> - jede muss zum Slug und zum Namensschema des Modus
+    passen, sonst Abbruch, bevor sciebo berührt wird (HARD GUARD 1)."""
     if not os.path.isdir(dist_dir):
         die(f"Verzeichnis nicht gefunden: {dist_dir}")
-    names = sorted(n for n in os.listdir(dist_dir) if n.endswith(".mcpb"))
+    names = sorted(n for n in os.listdir(dist_dir) if n.endswith("." + EXT))
     if not names:
-        die(f"Keine .mcpb in {dist_dir} - nichts zu veröffentlichen")
+        die(f"Keine .{EXT} in {dist_dir} - nichts zu veröffentlichen")
+    if MODE == "fixed" and len(names) > 1:
+        die(f"Modus fixed: genau eine .{EXT} erwartet, gefunden {len(names)} ({', '.join(names)})")
     pattern = bundle_re(slug)
     files = []
     for name in names:
         path = os.path.join(dist_dir, name)
         if not os.path.isfile(path):
             die(f"{name} ist keine reguläre Datei")
-        m = pattern.fullmatch(name)
-        if not owns_file(slug, name) or not m:
-            die(f"{name}: passt nicht zum Schema {slug}[-variante]-v<major>.<minor>.<patch>.mcpb "
-                f"für Slug {slug!r} - Abbruch, bevor sciebo berührt wird")
+        m = None
+        if MODE == "fixed":
+            if name != f"{slug}.{EXT}" or not owns_file(slug, name):
+                die(f"{name}: im Modus fixed ist genau {slug}.{EXT} erlaubt - "
+                    "Abbruch, bevor sciebo berührt wird")
+        else:
+            m = pattern.fullmatch(name)
+            if not owns_file(slug, name) or not m:
+                die(f"{name}: passt nicht zum Schema {slug}[-variante]-v<major>.<minor>.<patch>.{EXT} "
+                    f"für Slug {slug!r} - Abbruch, bevor sciebo berührt wird")
         with open(path, "rb") as fh:
             data = fh.read()
         if not data:
             die(f"{name} ist leer")
         try:
-            with zipfile.ZipFile(path) as z:
-                manifest = json.loads(z.read("manifest.json"))
+            manifest = read_manifest(path, EXT)
         except (zipfile.BadZipFile, KeyError, ValueError) as exc:
             die(f"{name}: kein lesbares Bundle ({exc})")
-        if str(manifest.get("version")) != m.group("version"):
+        if MODE == "fixed":
+            # Ohne Version im Dateinamen gibt es keinen Versionsabgleich. Statt
+            # dessen muss das Manifest denselben Slug nennen: das fängt ein
+            # fremdes Bundle ab, das unter dem eigenen Namen im Artefakt liegt.
+            if str(manifest.get("name")) != slug:
+                die(f"{name}: Name im Manifest {manifest.get('name')!r} passt nicht zum "
+                    f"Slug {slug!r}")
+        elif str(manifest.get("version")) != m.group("version"):
             die(f"{name}: manifest.version {manifest.get('version')!r} passt nicht zur "
                 f"Version im Dateinamen {m.group('version')!r}")
         files.append({
             "name": name, "data": data, "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
-            "family": slug + (m.group("variant") or ""),
-            "version": m.group("version"),
+            "family": slug if m is None else slug + (m.group("variant") or ""),
+            "version": None if m is None else m.group("version"),
         })
     return files
 
@@ -360,7 +443,7 @@ def main(argv):
         die("Aufruf: publish_sciebo.py [--dry-run] [DIST_DIR] | --self-test")
     dist_dir = rest[0] if rest else None
     if not dry_run and not dist_dir:
-        die("DIST_DIR fehlt - ohne --dry-run ist das Verzeichnis mit den .mcpb Pflicht")
+        die("DIST_DIR fehlt - ohne --dry-run ist das Verzeichnis mit den Bundles Pflicht")
 
     slug, root, folder, user, password = read_env()
     target = join_target(root, folder)
@@ -372,7 +455,8 @@ def main(argv):
         log("::add-mask::" + dav.auth)
     # Unkodiert ausgeben: der Login steht wörtlich darin, GitHub maskiert ihn.
     log(f"Ziel: {target}")
-    log(f"Slug: {slug}  - Eigentum: {slug}-*.mcpb, sonst nichts"
+    owned = f"{slug}-*.{EXT}" if MODE == "versioned" else f"{slug}.{EXT} und {slug}-*.{EXT}"
+    log(f"Slug: {slug}  - Modus: {MODE}  - Eigentum: {owned}, sonst nichts"
         + (f"  - fremd: {', '.join(OTHER_SLUGS)}" if OTHER_SLUGS else ""))
     if dry_run:
         log("DRY RUN - es wird nichts hochgeladen und nichts gelöscht")
@@ -537,6 +621,49 @@ def self_test():
     ok(owns_file("sciebo", "sciebo-files-v0.1.1.mcpb", ("sciebo-files",)) is False, "fremd-präfix sciebo/sciebo-files")
     ok(owns_file("uni-mail", "uni-mail-cfm-v1.1.1.mcpb", ()) is True, "ohne others")
 
+    # Modus fixed: der blosse Name gehört dazu, das Präfix bleibt eigen (Altlasten
+    # aus versionierten Läufen), alles andere nicht.
+    plugins = ("ent-thesis", "ent-aem", "ent-access")
+    for slug, name, expected in [
+        ("ent-thesis", "ent-thesis.plugin", True),
+        ("ent-thesis", "ent-thesis-v1.2.0.plugin", True),
+        ("ent-thesis", "ent-thesis-alt.plugin", True),
+        ("ent-thesis", "ent-thesis.mcpb", False),
+        ("ent-thesis", "ent-thesisX.plugin", False),
+        ("ent-thesis", "ent-aem.plugin", False),
+        ("ent-thesis", "VERSIONS.md", False),
+        ("ent-thesis", "ent-thesis.plugin.bak", False),
+        ("ent-thesis", "ent-thesis-x/../ent-aem.plugin", False),
+    ]:
+        others = tuple(k for k in plugins if k != slug)
+        ok(owns_file(slug, name, others, mode="fixed", ext="plugin") is expected,
+           f"owns_file fixed({slug!r}, {name!r}) != {expected}")
+
+    # Kreuzproben: der blosse Name gehört nur im Modus fixed dazu, eine fremde
+    # Endung in keinem Modus.
+    ok(owns_file("ent-thesis", "ent-thesis.plugin", (), mode="versioned", ext="plugin") is False,
+       "blosser Name gehört im Modus versioned nicht dazu")
+    ok(owns_file("ent-thesis", "ent-thesis-v1.0.0.plugin", (), mode="versioned", ext="plugin") is True,
+       "Präfix gehört im Modus versioned dazu")
+    ok(owns_file("ent-thesis", "ent-thesis-v1.0.0.mcpb", (), mode="fixed", ext="plugin") is False,
+       "fremde Endung nie (plugin-Lauf)")
+    ok(owns_file("uni-mail", "uni-mail-v1.0.0.plugin", (), mode="versioned", ext="mcpb") is False,
+       "fremde Endung nie (mcpb-Lauf)")
+
+    # Ungültiger Modus / ungültige Endung wirft wie ein ungültiger Slug.
+    for bad_mode in ("", "Versioned", "fix", "latest"):
+        try:
+            owns_file("ent-thesis", "ent-thesis.plugin", (), mode=bad_mode, ext="plugin")
+            ok(False, f"owns_file akzeptiert ungültigen Modus {bad_mode!r}")
+        except ValueError:
+            ok(True, "")
+    for bad_ext in ("", ".plugin", "MCPB", "zip"):
+        try:
+            owns_file("ent-thesis", "ent-thesis.plugin", (), mode="fixed", ext=bad_ext)
+            ok(False, f"owns_file akzeptiert ungültige Endung {bad_ext!r}")
+        except ValueError:
+            ok(True, "")
+
     for bad in ("", "Uni-Mail", "uni_mail", "-uni", "uni-", "uni--mail", "uni mail", "uni.mail", "uni-mail\n"):
         ok(not SLUG_RE.fullmatch(bad), f"Slug {bad!r} dürfte nicht gültig sein")
         try:
@@ -566,6 +693,25 @@ def self_test():
     ok(family_of("uni-mail", "uni-mail-latest.mcpb") is None, "family ohne schema")
     ok(family_of("sciebo-files", "sciebo-files-v0.1.1.mcpb") == "sciebo-files", "family sciebo")
 
+    # bundle_re trennt die Endungen, und im Modus fixed ist der Namensraum eine Familie.
+    ok(bool(bundle_re("ent-thesis", "plugin").fullmatch("ent-thesis-v1.2.0.plugin")),
+       "bundle_re plugin trifft .plugin")
+    ok(not bundle_re("ent-thesis", "plugin").fullmatch("ent-thesis-v1.2.0.mcpb"),
+       "bundle_re plugin trifft keine .mcpb")
+    ok(not bundle_re("ent-thesis", "mcpb").fullmatch("ent-thesis-v1.2.0.plugin"),
+       "bundle_re mcpb trifft keine .plugin")
+    ok(bool(bundle_re("ent-thesis").fullmatch("ent-thesis-v1.2.0.mcpb")), "bundle_re Standard mcpb")
+    ok(family_of("ent-thesis", "ent-thesis.plugin", mode="fixed", ext="plugin") == "ent-thesis",
+       "family fixed blosser Name")
+    ok(family_of("ent-thesis", "ent-thesis-v1.2.0.plugin", mode="fixed", ext="plugin") == "ent-thesis",
+       "family fixed Altlast")
+    ok(family_of("ent-thesis", "ent-thesis-alt.plugin", mode="fixed", ext="plugin") == "ent-thesis",
+       "family fixed ohne Schema")
+    ok(family_of("ent-thesis", "ent-aem.plugin", mode="fixed", ext="plugin") is None,
+       "family fixed fremd")
+    ok(family_of("ent-thesis", "ent-thesis.plugin", mode="versioned", ext="plugin") is None,
+       "family versioned kennt den blossen Namen nicht")
+
     for slug, name in [("uni-mail", "sciebo-files-v0.1.1.mcpb"), ("uni-mail", "VERSIONS.md"),
                        ("uni-mail", "uni-mailer-v1.0.0.mcpb"), ("sciebo-files", "sciebo-v1.0.0.mcpb")]:
         try:
@@ -574,6 +720,34 @@ def self_test():
         except RuntimeError:
             ok(True, "")
     ok(guard_owned("uni-mail", "uni-mail-cfm-v1.1.1.mcpb"), "guard eigene Datei")
+
+    # Passendes Präfix, aber fremde Endung: kein DELETE.
+    for slug, name, ext in [("ent-thesis", "ent-thesis-v1.0.0.mcpb", "plugin"),
+                            ("ent-thesis", "ent-thesis.plugin", "mcpb"),
+                            ("uni-mail", "uni-mail-v1.0.0.plugin", "mcpb")]:
+        try:
+            guard_owned(slug, name, ext)
+            ok(False, f"guard_owned({slug!r}, {name!r}, {ext!r}) hat nicht ausgelöst")
+        except RuntimeError:
+            ok(True, "")
+
+    # Der Löschpfad in main() ruft guard_owned und family_of ohne Modus- und
+    # Endungsargument, also über die Globals - hier werden sie kurz umgestellt.
+    global MODE, EXT
+    saved_mode, saved_ext = MODE, EXT
+    try:
+        MODE, EXT = "fixed", "plugin"
+        ok(guard_owned("ent-thesis", "ent-thesis.plugin"), "guard fixed: blosser Name")
+        ok(guard_owned("ent-thesis", "ent-thesis-v1.2.0.plugin"), "guard fixed: Altlast")
+        for name in ("ent-aem.plugin", "ent-thesis.mcpb", "VERSIONS.md"):
+            try:
+                guard_owned("ent-thesis", name)
+                ok(False, f"guard_owned fixed hat {name!r} nicht abgelehnt")
+            except RuntimeError:
+                ok(True, "")
+        ok(family_of("ent-thesis", "ent-thesis.plugin") == "ent-thesis", "family fixed über Globals")
+    finally:
+        MODE, EXT = saved_mode, saved_ext
 
     ok(join_target("https://h/remote.php/dav/files/u@x.de/", "/A B/C/") ==
        "https://h/remote.php/dav/files/u@x.de/A B/C", "join_target")
