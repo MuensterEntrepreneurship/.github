@@ -44,7 +44,8 @@ daran, und ein aufgerufener Workflow kann Rechte nur einschränken, nie erweiter
 | `slug` | Der validierte Slug. Ein Folge-Job übernimmt diesen Wert, statt das Literal erneut zu schreiben. |
 | `version` | Version ohne `v`, aus dem Tag |
 | `files` | Gebaute Bundle-Dateinamen, durch Leerzeichen getrennt |
-| `artifact` | Name des Artefakts mit den Bundles (`mcpb-bundles`) |
+| `artifact` | Name des Artefakts mit den Bundles unter ihren versionierten Namen (`mcpb-bundles`) |
+| `artifact_latest` | Name des Artefakts mit denselben Bundles unter ihren `-latest`-Namen (`mcpb-latest`) |
 
 ## Was das aufrufende Repository braucht
 
@@ -91,6 +92,11 @@ Zusätzlich zu `v<version>` pflegt der Workflow ein Release `latest` mit stabile
 hochgeladen wird; sonst bleiben Dateien umbenannter Varianten als tote, aktuell aussehende
 Downloads hängen.
 
+Dieselben Kopien entstehen in einem eigenen Schritt vor dem Release-Teil und gehen als Artefakt
+`mcpb-latest` an einen Folge-Job. Sie tragen damit in sciebo dieselben Namen wie am
+Rolling-Release: ein Bundle, ein Name, überall. Der Schritt steht bewusst vor dem Release, damit
+das Artefakt auch dann entsteht, wenn am Release etwas schiefgeht.
+
 ## Skript und Versionierung
 
 `scripts/apply_variant.mjs` liegt in diesem Repository, nicht im Workflow. Ein wiederverwendbarer
@@ -107,10 +113,11 @@ Repositories.
 
 ## Weitergabe der Bundles
 
-Das Artefakt `mcpb-bundles` steht im selben Lauf für einen Folge-Job bereit, etwa
-[`publish-sciebo`](publish-sciebo.md). Das ist optional; dieser Workflow ist allein
-funktionsfähig. Die Aufbewahrungsfrist des Artefakts beträgt 7 Tage, genug für einen erneuten Lauf
-des Folge-Jobs.
+Zwei Artefakte stehen im selben Lauf für einen Folge-Job bereit: `mcpb-bundles` mit den
+versionierten Namen, wie sie am Release hängen, und `mcpb-latest` mit den stabilen Namen, wie sie
+[`publish-sciebo`](publish-sciebo.md) nach sciebo spiegelt. Das ist optional; dieser Workflow ist
+allein funktionsfähig. Die Aufbewahrungsfrist beträgt 7 Tage, genug für einen erneuten Lauf des
+Folge-Jobs.
 
 ## Herkunft
 

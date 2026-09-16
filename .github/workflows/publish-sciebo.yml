@@ -1,73 +1,54 @@
 name: publish-sciebo
 
-# Spiegelt die in diesem Lauf gebauten Bundles eines einzelnen Slugs in den
-# gemeinsamen sciebo-Ordner - für alle, die nicht über GitHub installieren.
-# Wiederverwendbarer Workflow: ein aufrufendes Repo übergibt die gebauten
-# Bundles als Artefakt aus demselben Lauf; dieser Job lädt sie herunter, prüft
-# sie gegen den Slug und spielt sie per WebDAV nach sciebo. Er setzt release.yml
-# nicht voraus: jeder Vorgänger-Job genügt, der ein Artefakt mit Dateien ablegt,
-# die zum Slug passen. Anleitung: docs/publish-sciebo.md.
+# Spiegelt die Dateien eines Artefakts in einen sciebo-Ordner - für alle, die
+# nicht über GitHub installieren. Wiederverwendbarer Workflow: ein aufrufendes
+# Repo legt im selben Lauf ein Artefakt ab, dieser Job lädt es herunter und
+# schreibt jede Datei per WebDAV in den Zielordner.
 #
-# Zwei Modi, ein Ablauf (Eingabe `mode`, Endung über `ext`):
-#   versioned  <slug>[-<variante>]-v<x.y.z>.<ext>, typisch .mcpb-Extensions
-#   fixed      <slug>.<ext> ohne Version, typisch .plugin-Bundles; der Link bleibt
-#              stabil, jeder Lauf überschreibt dieselbe Datei
+# Der ganze Vertrag, und er ist absichtlich so kurz:
 #
-# Aufräumregel (die einzige): erst hochladen, danach den Ordner per PROPFIND
-# lesen, und nur Dateien mit der Endung .<ext> löschen, die mit "<slug>-"
-# beginnen - im Modus fixed zusätzlich der blosse Name "<slug>.<ext>" - und
-# nicht gerade in diesem Lauf hochgeladen wurden. Dateien anderer Slugs werden
-# nie angefasst - mehrere Repos teilen sich den Ordner, jedes räumt nur hinter
-# sich selbst auf. Scheitert der PROPFIND, wird nichts gelöscht. Es gibt kein
-# .version.json und keine VERSIONS.md mehr.
+#   Jede Datei aus dem Artefakt landet unter ihrem eigenen Namen im Zielordner
+#   und ersetzt dort die gleichnamige Datei. Es wird nie etwas gelöscht, nie ein
+#   Ordner angelegt und nie ein Dateiname ausgewertet.
+#
+# Daraus folgt der Rest. Weil nichts gelöscht wird, gibt es keine Eigentumsfrage
+# und damit keinen Slug, keine Allowlist, keine Präfixregel, keine Endungsliste
+# und keine Versionsgrammatik. Welche Dateien entstehen, entscheidet allein der
+# Aufrufer über die Namen im Artefakt; .mcpb, .plugin, ein Skill-Zip oder eine
+# PDF sind für diesen Job dasselbe. Der Preis dafür steht in docs/publish-sciebo.md:
+# eine zurückgezogene Datei bleibt liegen, bis jemand sie von Hand entfernt. Der
+# Job meldet solche Dateien nach jedem Lauf, er entfernt sie nicht.
+#
+# Ersetzt wird in zwei Schritten, damit der Zielname nie eine halbe Datei trägt:
+# PUT auf ".<name>.part", Bytes zurücklesen und vergleichen, dann MOVE mit
+# Overwrite auf "<name>". Scheitert einer der Schritte, bleibt die bisherige
+# Datei unberührt stehen.
 #
 # `secrets.SCIEBO_*` und `vars.SCIEBO_*` lösen sich immer gegen das AUFRUFENDE
-# Repo auf, nie gegen dieses .github-Repo - jedes Extension-Repo braucht die
-# zwei Secrets (SCIEBO_USER, SCIEBO_APP_PASSWORD) und die zwei Variablen
-# (SCIEBO_BASE_URL = nur der Host, SCIEBO_FOLDER = Zielordner) selbst. Eine
-# nicht gesetzte Variable expandiert zu "" statt zu scheitern; das fängt die
-# Vorprüfung im ersten Schritt ab, statt in die Konto-Wurzel zu veröffentlichen.
+# Repo auf, nie gegen dieses .github-Repo - jedes Repo braucht die zwei Secrets
+# (SCIEBO_USER, SCIEBO_APP_PASSWORD) und die zwei Variablen (SCIEBO_BASE_URL =
+# nur der Host, SCIEBO_FOLDER = Zielordner) selbst. Eine nicht gesetzte Variable
+# expandiert zu "" statt zu scheitern; das fängt die Vorprüfung im ersten Schritt
+# ab, statt in die Konto-Wurzel zu veröffentlichen.
 #
-# Namensregel (symmetrisch, wird unten geprüft): kein bekannter Slug darf
-# Präfix eines anderen sein, in keiner der beiden Richtungen - das Slug-Präfix
-# ist die einzige Grundlage, nach der ein Lauf entscheidet, welche Dateien er
-# löschen darf.
+# In SCIEBO_FOLDER darf niemand sonst Dateien ablegen: gelöscht wird zwar nie,
+# aber ein gleichnamiger Upload überschreibt. Ein reiner Verteilordner erfüllt
+# das, ein gemischter Arbeitsordner nicht.
 #
 # Das Skript liegt als scripts/publish_sciebo.py in diesem Repo und wird unten
 # an genau der SHA nachgeladen, aus der dieser Workflow läuft (job.workflow_sha).
 #
 # Schreibzugriff auf dieses .github-Repo muss Owner-only bleiben: ein Lauf eines
-# rufenden Repos läuft mit dessen Secrets. Aufrufer referenzieren deshalb den
-# verschobenen Tag `v1`, nicht `main`; eine Änderung hier wird erst wirksam,
-# wenn `v1` nachgezogen wird.
+# rufenden Repos läuft mit dessen Secrets.
 
 on:
   workflow_call:
     inputs:
-      slug:
-        description: "Kurzname = Präfix der Dateien, die dieser Lauf hochlädt und aufräumen darf. Aus needs.release.outputs.slug übernehmen."
-        required: true
-        type: string
-      version:
-        description: "Optional, nur im Modus versioned: Version ohne v - jede Datei muss dann auf -v<version>.<ext> enden (Plausibilitätsprüfung)"
-        required: false
-        type: string
-        default: ""
-      mode:
-        description: "versioned (Version im Dateinamen, Standard) oder fixed (fester Name <slug>.<ext> ohne Version)"
-        required: false
-        type: string
-        default: versioned
-      ext:
-        description: "Dateiendung ohne Punkt: mcpb (Standard) oder plugin"
-        required: false
-        type: string
-        default: mcpb
       artifact:
-        description: "Name des Artefakts mit den gebauten Bundles"
+        description: "Name des Artefakts, dessen Dateien gespiegelt werden. Die Dateinamen darin sind die Namen in sciebo."
         required: false
         type: string
-        default: mcpb-bundles
+        default: mcpb-latest
     # Keine secrets: hier - der Aufrufer nutzt "secrets: inherit"; ob SCIEBO_USER
     # und SCIEBO_APP_PASSWORD tatsächlich gesetzt sind, prüft der erste Schritt.
 
@@ -75,15 +56,6 @@ on:
 # eigenen Laufs wird über das Runtime-Token geladen, nicht über GITHUB_TOKEN.
 permissions:
   contents: read
-
-# Die Allowlist der Extensions und Plugins, die in den gemeinsamen sciebo-Ordner
-# veröffentlichen dürfen. Kommt eine weitere hinzu, wird sie hier eingetragen -
-# sonst bricht ihr Aufruf im ersten Schritt ab. Kein Slug darf Präfix eines
-# anderen sein (in keiner Richtung), weil das Slug-Präfix die einzige Grundlage
-# ist, nach der ein Lauf entscheidet, welche Dateien er löschen darf. Die Regel
-# gilt modus- und endungsübergreifend: alle Slugs teilen sich denselben Ordner.
-env:
-  KNOWN_SLUGS: "confluence github-access sciebo uni-mail ent-thesis ent-aem ent-access"
 
 jobs:
   publish:
@@ -95,72 +67,13 @@ jobs:
     steps:
       # Secrets werden hier nur als "gesetzt/nicht gesetzt" abgefragt, ihre
       # Werte landen erst im letzten Schritt in der Umgebung.
-      - name: Slug, Allowlist und Konfiguration des Aufrufers prüfen
+      - name: Konfiguration des Aufrufers prüfen
         env:
-          SLUG: ${{ inputs.slug }}
-          MODE: ${{ inputs.mode }}
-          EXT: ${{ inputs.ext }}
-          VERSION: ${{ inputs.version }}
           SCIEBO_BASE_URL: ${{ vars.SCIEBO_BASE_URL }}
           SCIEBO_FOLDER: ${{ vars.SCIEBO_FOLDER }}
           HAS_USER: ${{ secrets.SCIEBO_USER != '' }}
           HAS_PASSWORD: ${{ secrets.SCIEBO_APP_PASSWORD != '' }}
         run: |
-          # 0. Modus und Endung zuerst: beide bestimmen, welche Dateien dieser
-          #    Lauf im gemeinsamen Ordner als eigen ansieht und löschen darf.
-          case "$MODE" in
-            versioned|fixed) ;;
-            *) echo "::error::Ungültiger mode '$MODE' - erlaubt: versioned, fixed"; exit 1 ;;
-          esac
-          case "$EXT" in
-            mcpb|plugin) ;;
-            *) echo "::error::Ungültige ext '$EXT' - erlaubt: mcpb, plugin"; exit 1 ;;
-          esac
-          if [ "$MODE" = "fixed" ] && [ -n "$VERSION" ]; then
-            echo "::error::version ist im Modus fixed nicht erlaubt - der Dateiname trägt dort keine Version"
-            exit 1
-          fi
-
-          # 1. Slug-Syntax
-          if ! [[ "$SLUG" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-            echo "::error::Ungültiger slug '$SLUG' - erlaubt ist ^[a-z0-9]+(-[a-z0-9]+)*\$"
-            exit 1
-          fi
-
-          # 2. Slug muss in der Allowlist stehen
-          KNOWN=false
-          for S in $KNOWN_SLUGS; do
-            [ "$S" = "$SLUG" ] && KNOWN=true
-          done
-          if [ "$KNOWN" != "true" ]; then
-            echo "::error::Slug '$SLUG' steht nicht in KNOWN_SLUGS ('$KNOWN_SLUGS') - neue Extension zuerst dort eintragen"
-            exit 1
-          fi
-
-          # 3. Namensregel paarweise über die gesamte Allowlist prüfen: kein
-          #    Slug darf Präfix eines anderen sein, in keiner Richtung.
-          for A in $KNOWN_SLUGS; do
-            for B in $KNOWN_SLUGS; do
-              if [ "$A" != "$B" ]; then
-                case "$B" in
-                  "$A"-*)
-                    echo "::error::Namensregel verletzt: '$A' ist Präfix von '$B'"
-                    exit 1
-                    ;;
-                esac
-              fi
-            done
-          done
-
-          # 4. Die übrigen bekannten Slugs für die Aufräumregel im letzten
-          #    Schritt merken - der eigene Slug zählt nicht dazu.
-          OTHER=""
-          for S in $KNOWN_SLUGS; do
-            [ "$S" = "$SLUG" ] || OTHER="$OTHER $S"
-          done
-          echo "OTHER_SLUGS=${OTHER# }" >> "$GITHUB_ENV"
-
-          # 5. Secrets und Variablen des Aufrufers - Secret-Werte bleiben außen vor
           MISSING=""
           [ "$HAS_USER" = "true" ]     || MISSING="$MISSING SCIEBO_USER(secret)"
           [ "$HAS_PASSWORD" = "true" ] || MISSING="$MISSING SCIEBO_APP_PASSWORD(secret)"
@@ -170,63 +83,33 @@ jobs:
             echo "::error::Im Repo $GITHUB_REPOSITORY nicht gesetzt:$MISSING - Settings > Secrets and variables > Actions"
             exit 1
           fi
-
-          # 6. Ausgabe
-          echo "Slug: $SLUG"
-          echo "Modus: $MODE, Endung: .$EXT"
-          echo "Andere bekannte Slugs: ${OTHER# }"
           echo "Basis: $SCIEBO_BASE_URL"
           echo "Zielordner: $SCIEBO_FOLDER"
 
-      - name: Gebaute Bundles aus dem Artefakt laden
+      - name: Dateien aus dem Artefakt laden
         uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.artifact }}
-          path: ${{ runner.temp }}/bundles
+          path: ${{ runner.temp }}/publish
 
-      # Vorprüfung vor dem ersten Byte nach sciebo: jede Datei muss zum Slug
-      # passen - im Modus versioned über das Präfix "<slug>-", im Modus fixed
-      # über den exakten Namen "<slug>.<ext>". Sonst passt das Artefakt nicht
-      # zum Slug, und die Aufräumregel im Skript arbeitete auf dem falschen
-      # Namensraum. publish_sciebo.py prüft dasselbe noch einmal unmittelbar
-      # vor jedem DELETE; doppelt ist hier Absicht.
-      - name: Bundle-Dateinamen gegen Slug prüfen
-        env:
-          SLUG: ${{ inputs.slug }}
-          VERSION: ${{ inputs.version }}
-          MODE: ${{ inputs.mode }}
-          EXT: ${{ inputs.ext }}
+      # Nur die grobe Form, bevor Zugangsdaten in die Umgebung gelangen: gibt es
+      # überhaupt Dateien, und ist keine davon ein Verzeichnis. Die Namen selbst
+      # prüft publish_sciebo.py, und zwar vor dem ersten Socket.
+      - name: Artefakt sichten
         run: |
-          shopt -s nullglob
-          FILES=("$RUNNER_TEMP"/bundles/*."$EXT")
-          if [ "${#FILES[@]}" -eq 0 ]; then
-            echo "::error::Keine .$EXT im Artefakt"
+          DIR="$RUNNER_TEMP/publish"
+          shopt -s nullglob dotglob
+          ENTRIES=("$DIR"/*)
+          if [ "${#ENTRIES[@]}" -eq 0 ]; then
+            echo "::error::Das Artefakt '${{ inputs.artifact }}' enthält keine Dateien"
             exit 1
           fi
-          if [ "$MODE" = "fixed" ] && [ "${#FILES[@]}" -ne 1 ]; then
-            echo "::error::Modus fixed: genau eine .$EXT erwartet, ${#FILES[@]} gefunden"
-            exit 1
-          fi
-          for F in "${FILES[@]}"; do
-            NAME=$(basename "$F")
-            if [ "$MODE" = "fixed" ]; then
-              if [ "$NAME" != "$SLUG.$EXT" ]; then
-                echo "::error::Modus fixed: $NAME heißt nicht '$SLUG.$EXT'"
-                exit 1
-              fi
-            else
-              case "$NAME" in
-                "$SLUG"-*) ;;
-                *) echo "::error::$NAME beginnt nicht mit '$SLUG-' - Artefakt und Slug passen nicht zusammen"; exit 1 ;;
-              esac
-              if [ -n "$VERSION" ]; then
-                case "$NAME" in
-                  *"-v$VERSION.$EXT") ;;
-                  *) echo "::error::$NAME endet nicht auf -v$VERSION.$EXT"; exit 1 ;;
-                esac
-              fi
+          for E in "${ENTRIES[@]}"; do
+            if [ -d "$E" ]; then
+              echo "::error::$(basename "$E") ist ein Verzeichnis - dieser Spiegel kennt nur Dateien, flach. Ordner gehören vom Aufrufer gepackt."
+              exit 1
             fi
-            echo "OK: $NAME"
+            echo "$(basename "$E")  $(stat -c%s "$E") Byte"
           done
 
       # Das Skript liegt als scripts/publish_sciebo.py in diesem Repo und wird hier
@@ -238,15 +121,9 @@ jobs:
       # aufgerufen hat. Workflow-Datei und Skript stammen damit immer aus demselben
       # Commit; eine Drift zwischen beiden ist konstruktiv ausgeschlossen.
       #
-      # Ziel ist $RUNNER_TEMP, nicht das Arbeitsverzeichnis: in diesem Job gibt es
-      # zwar keinen Checkout, aber dieselbe Regel gilt im Release-Workflow, wo der
-      # Arbeitsbaum das Bundle-Verzeichnis ist.
-      #
-      # Der Vertrag des Skripts steht in seinem Docstring: Umgebung SLUG, MODE, EXT,
-      # OTHER_SLUGS, SCIEBO_BASE_URL, SCIEBO_FOLDER, SCIEBO_USER, SCIEBO_APP_PASSWORD;
-      # argv[1] = Verzeichnis mit den Bundles; kein MKCOL, der Zielordner muss bereits
-      # existieren; scheitert der PROPFIND, wird nichts gelöscht und das Skript
-      # beendet sich mit Exit-Code 1.
+      # Der Vertrag des Skripts steht in seinem Docstring: Umgebung SCIEBO_BASE_URL,
+      # SCIEBO_FOLDER, SCIEBO_USER, SCIEBO_APP_PASSWORD; argv[1] = Verzeichnis mit den
+      # Dateien; kein MKCOL, der Zielordner muss bereits existieren; kein DELETE, nie.
       - name: Sciebo-Skript aus diesem Repo holen
         env:
           WF_REPO: ${{ job.workflow_repository }}
@@ -276,20 +153,17 @@ jobs:
           echo "- Skript: \`$WF_REPO@$WF_SHA\`" >> "$GITHUB_STEP_SUMMARY"
 
       # Beweist bei jedem Lauf, dass das nachgeladene Skript intakt ist, bevor
-      # überhaupt Zugangsdaten in die Umgebung gelangen. Bewusst ohne Secrets.
+      # überhaupt Zugangsdaten in die Umgebung gelangen. Der wichtigste Teil davon
+      # ist die Zusage, die dieser Job gibt: das Skript kennt nur PUT, GET, PROPFIND
+      # und MOVE, und der Guard dafür greift vor dem Socket. Bewusst ohne Secrets.
       # Dieselbe Prüfung läuft in der CI dieses Repos bei jedem Push und PR.
       - name: Selbsttest der Schutzlogik (offline)
         run: python3 "$PUBLISH_SCIEBO_PY" --self-test
 
-      - name: Upload nach sciebo
+      - name: Spiegeln nach sciebo
         env:
-          SLUG: ${{ inputs.slug }}
-          MODE: ${{ inputs.mode }}
-          EXT: ${{ inputs.ext }}
-          # OTHER_SLUGS kommt bereits aus $GITHUB_ENV des ersten Schritts und
-          # muss hier nicht erneut zugeordnet werden.
           SCIEBO_BASE_URL: ${{ vars.SCIEBO_BASE_URL }}
           SCIEBO_FOLDER: ${{ vars.SCIEBO_FOLDER }}
           SCIEBO_USER: ${{ secrets.SCIEBO_USER }}
           SCIEBO_APP_PASSWORD: ${{ secrets.SCIEBO_APP_PASSWORD }}
-        run: python3 "$PUBLISH_SCIEBO_PY" "$RUNNER_TEMP/bundles"
+        run: python3 "$PUBLISH_SCIEBO_PY" "$RUNNER_TEMP/publish"

@@ -42,8 +42,11 @@ on:
         description: "Gebaute Bundle-Dateinamen, durch Leerzeichen getrennt"
         value: ${{ jobs.release.outputs.files }}
       artifact:
-        description: "Name des Artefakts mit den gebauten .mcpb"
+        description: "Name des Artefakts mit den gebauten .mcpb (versionierte Namen, wie am Release)"
         value: mcpb-bundles
+      artifact_latest:
+        description: "Name des Artefakts mit denselben Bundles unter ihren -latest-Namen (für publish-sciebo)"
+        value: mcpb-latest
 
 # Der Aufrufer muss contents: write gewähren (Release, Assets, Tag-Push). Ein
 # aufgerufener Workflow kann Rechte nur einschränken, nie erweitern - fehlt das
@@ -286,6 +289,25 @@ jobs:
             fi
           done
 
+      # Dieselben Bytes ein zweites Mal, unter den Namen, die stabil bleiben sollen:
+      # <slug>-latest.mcpb bzw. <slug>-<key>-latest.mcpb. Diese Namen tragen sowohl
+      # die Assets des Rolling-Release als auch die Dateien im sciebo-Ordner - ein
+      # Bundle, ein Name, überall. Der Schritt steht VOR dem Release-Teil, damit das
+      # Artefakt für publish-sciebo auch dann entsteht, wenn am Release etwas
+      # schiefgeht: publish-sciebo setzt release nicht voraus, nur ein Artefakt.
+      - name: Latest-Kopien anlegen
+        env:
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          DIST="$RUNNER_TEMP/dist"
+          mkdir -p "$DIST/latest"
+          while read -r BUNDLE_SLUG; do
+            [ -n "$BUNDLE_SLUG" ] || continue
+            # Bei Varianten heißt das Bundle <slug>-<key>-v<version>.mcpb, sonst <slug>-v<version>.mcpb.
+            cp "$DIST/$BUNDLE_SLUG-v$VERSION.mcpb" "$DIST/latest/$BUNDLE_SLUG-latest.mcpb"
+          done < "$DIST/slugs.txt"
+          echo "Unter stabilem Namen:"; ls -1 "$DIST/latest"
+
       # Ab hier sind die Bundles geprüft. Das Artefakt trägt genau die Bytes, die
       # gleich ans Release gehen; der Sciebo-Job lädt es im selben Lauf herunter.
       # 7 Tage genügen für einen "Re-run failed jobs" des Sciebo-Jobs; danach heißt
@@ -300,6 +322,18 @@ jobs:
           retention-days: 7
           # Artefakte sind je Lauf unveränderlich; ohne overwrite würde ein
           # "Re-run failed jobs" dieses Jobs genau an diesem Schritt scheitern.
+          overwrite: true
+
+      # Das Artefakt, das publish-sciebo spiegelt. Der Glob ist nicht rekursiv, das
+      # Artefakt oben enthält dist/latest/ also nicht - beide Mengen bleiben getrennt.
+      - name: Latest-Bundles als Artefakt sichern
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcpb-latest
+          path: ${{ runner.temp }}/dist/latest/*.mcpb
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
           overwrite: true
 
       # Der Tag existiert schon (er hat den Lauf ausgelöst), gh hängt das Release
@@ -341,12 +375,9 @@ jobs:
         run: |
           DIST="$RUNNER_TEMP/dist"
           LATEST_TAG="latest"
-          mkdir -p "$DIST/latest"
-          while read -r BUNDLE_SLUG; do
-            [ -n "$BUNDLE_SLUG" ] || continue
-            # Bei Varianten heißt das Bundle <slug>-<key>-v<version>.mcpb, sonst <slug>-v<version>.mcpb.
-            cp "$DIST/$BUNDLE_SLUG-v$VERSION.mcpb" "$DIST/latest/$BUNDLE_SLUG-latest.mcpb"
-          done < "$DIST/slugs.txt"
+          # Die Kopien stehen bereits in $DIST/latest, angelegt im Schritt
+          # "Latest-Kopien anlegen" - dieselben Dateien gehen ans Rolling-Release
+          # und in den sciebo-Ordner.
           echo "Am Rolling-Release:"; ls -1 "$DIST/latest"
           NOTES="Zeigt immer auf die neueste Version. Aktuell: **v$VERSION** ([Änderungsstand]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$VERSION)). Bei mehreren Dateien die zum eigenen Postfach passende laden."
           # Leichtgewichtiger Tag auf HEAD (= Commit des Release-Tags), keine Git-Identität nötig.

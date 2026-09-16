@@ -1,89 +1,69 @@
 # publish-sciebo
 
-Lädt die gebauten Bundles aus einem Artefakt desselben Laufs per WebDAV in den sciebo-Ordner des
-aufrufenden Repositories, für alle, die nicht über GitHub installieren, und entfernt dort
-anschließend die überholten Dateien desselben Slugs.
+Spiegelt die Dateien eines Artefakts desselben Laufs per WebDAV in einen sciebo-Ordner, für alle,
+die nicht über GitHub installieren.
 
 Datei: [`.github/workflows/publish-sciebo.yml`](../.github/workflows/publish-sciebo.yml)
+
+## Der Vertrag
+
+> Jede Datei aus dem Artefakt landet unter ihrem eigenen Namen im Zielordner und ersetzt dort die
+> gleichnamige Datei. Es wird nie etwas gelöscht, nie ein Ordner angelegt und nie ein Dateiname
+> ausgewertet.
+
+Mehr steht nicht darin, und das ist der Punkt. Weil nichts gelöscht wird, gibt es keine Frage, wem
+eine Datei gehört, und damit auch keinen Slug, keine Allowlist, keine Präfixregel, keine
+Endungsliste und keine Versionsgrammatik. Welche Dateien in sciebo entstehen, entscheidet allein
+der Aufrufer über die Namen im Artefakt. Eine `.mcpb`, ein `.plugin`, ein Skill-Zip und eine PDF
+sind für diesen Job dasselbe.
 
 ## Voraussetzung ist ein Artefakt, nicht ein bestimmter Workflow
 
 Dieser Workflow setzt [`release`](release.md) nicht voraus. Er braucht nur einen Vorgänger-Job im
-selben Lauf, der ein Artefakt mit Dateien ablegt, die zum Slug passen. Der Artefaktname ist
-einstellbar; das Artefakt wird über das Runtime-Token des Laufs geladen, nicht über `GITHUB_TOKEN`.
+selben Lauf, der ein Artefakt mit Dateien ablegt. Das Artefakt wird über das Runtime-Token des
+Laufs geladen, nicht über `GITHUB_TOKEN`; ein Checkout findet nicht statt.
 
 ## Aufruf
+
+Zusammen mit `release`, für die `.mcpb`-Extensions. `release` legt das Artefakt `mcpb-latest` ab,
+das die Bundles unter ihren stabilen Namen trägt (`<slug>-latest.mcpb`, bei Varianten
+`<slug>-<key>-latest.mcpb`). Das ist zugleich der Standardwert von `artifact`:
 
 ```yaml
 jobs:
   publish-sciebo:
-    needs: build
-    uses: MuensterEntrepreneurship/.github/.github/workflows/publish-sciebo.yml@v1
-    with:
-      slug: sciebo
-      version: ${{ needs.build.outputs.version }}
-      artifact: mcpb-bundles
+    needs: release
+    uses: MuensterEntrepreneurship/.github/.github/workflows/publish-sciebo.yml@main
     secrets: inherit
     permissions:
       contents: read
 ```
 
-Zusammen mit `release` übernimmt man Slug und Version besser aus dessen Ausgaben, statt sie erneut
-zu schreiben:
+Für alles andere, hier ein Repo, das seine Bundles selbst baut:
 
 ```yaml
+jobs:
+  publish-sciebo:
+    needs: build
+    uses: MuensterEntrepreneurship/.github/.github/workflows/publish-sciebo.yml@main
     with:
-      slug: ${{ needs.release.outputs.slug }}
-      version: ${{ needs.release.outputs.version }}
+      artifact: plugin-bundles
+    secrets: inherit
+    permissions:
+      contents: read
 ```
+
+Ein Artefakt je Lauf, mit allen Dateien darin. Eine Matrix mit einem Job je Datei ist nicht nötig
+und nicht erwünscht: sie lädt dasselbe Skript mehrfach nach und schreibt denselben Ordner mehrfach.
 
 ## Eingaben
 
 | Eingabe | Pflicht | Bedeutung |
 |---------|---------|-----------|
-| `slug` | ja | Präfix der Dateien, die dieser Lauf hochlädt und aufräumen darf. Muss in der Allowlist stehen. |
-| `version` | nein | Nur im Modus `versioned`. Plausibilitätsprüfung: jede Datei muss auf `-v<version>.<ext>` enden. Im Modus `fixed` bricht der Lauf ab, wenn sie gesetzt ist. |
-| `mode` | nein | `versioned` (Standard) oder `fixed`, siehe unten |
-| `ext` | nein | Dateiendung ohne Punkt: `mcpb` (Standard) oder `plugin` |
-| `artifact` | nein | Name des Artefakts mit den Bundles, Standard `mcpb-bundles` |
+| `artifact` | nein | Name des Artefakts, dessen Dateien gespiegelt werden. Standard `mcpb-latest`. |
 
-## Zwei Modi, ein Ablauf
-
-| Modus | Dateiname | Typisch für | Das Aufräumen entfernt |
-|-------|-----------|-------------|------------------------|
-| `versioned` | `<slug>[-<variante>]-v<x.y.z>.<ext>` | `.mcpb`-Extensions, jede Version bekommt einen eigenen Namen | alle `<slug>-*.<ext>`, die dieser Lauf nicht hochgeladen hat, also die Vorgängerversionen |
-| `fixed` | `<slug>.<ext>`, genau eine Datei | `.plugin`-Bundles, deren Link stabil bleiben soll | zusätzlich zu `<slug>-*.<ext>` nichts weiter: die hochgeladene Datei wird überschrieben, versionierte Altlasten desselben Slugs verschwinden |
-
-Im Modus `fixed` trägt der Dateiname keine Version, ein Abgleich gegen den Dateinamen ist also
-nicht möglich. An seiner Stelle prüft das Skript das Manifest im Bundle
-(`.claude-plugin/plugin.json` bei `.plugin`, `manifest.json` bei `.mcpb`): dessen `name` muss dem
-Slug entsprechen. Das fängt ein fremdes Bundle ab, das unter dem eigenen Dateinamen im Artefakt
-liegt.
-
-Aufruf im Modus `fixed`, hier über eine Matrix für die drei Plugins:
-
-```yaml
-jobs:
-  publish-sciebo:
-    needs: build
-    strategy:
-      matrix:
-        slug: [ent-thesis, ent-aem, ent-access]
-    uses: MuensterEntrepreneurship/.github/.github/workflows/publish-sciebo.yml@v1
-    with:
-      slug: ${{ matrix.slug }}
-      mode: fixed
-      ext: plugin
-      artifact: plugin-bundles-${{ matrix.slug }}
-    secrets: inherit
-    permissions:
-      contents: read
-```
-
-Ein Artefakt je Slug, nicht ein gemeinsames: der Modus `fixed` erwartet im heruntergeladenen
-Artefakt genau eine `.<ext>`, und zwar `<slug>.<ext>`. Jeder Matrix-Job lädt das Artefakt
-vollständig herunter, ein gemeinsames Artefakt mit den Bundles aller drei Plugins bricht deshalb in
-der Vorprüfung ab. Der Build-Job muss die drei Bundles also getrennt hochladen.
+Das ist die vollständige Liste. `slug`, `version`, `mode` und `ext` gibt es nicht mehr; sie waren
+Werkzeuge der Löschentscheidung, die es nicht mehr gibt.
 
 ## Secrets und Variablen des aufrufenden Repositories
 
@@ -96,58 +76,61 @@ variables, Actions:
 | `SCIEBO_USER` | Secret | sciebo-Login |
 | `SCIEBO_APP_PASSWORD` | Secret | App-Passwort aus sciebo, Einstellungen, Sicherheit |
 | `SCIEBO_BASE_URL` | Variable | Nur der Host, `https://uni-muenster.sciebo.de`. Das Skript ergänzt `/remote.php/dav/files/<SCIEBO_USER>`. |
-| `SCIEBO_FOLDER` | Variable | Zielordner unterhalb der Dateien-Wurzel. Muss existieren, der Workflow legt ihn nicht an. |
+| `SCIEBO_FOLDER` | Variable | Zielordner unterhalb der Dateien-Wurzel. Muss existieren, der Workflow legt ihn nicht an. Ohne `%` im Namen. |
 
 Eine nicht gesetzte Variable expandiert zu `""` statt zu scheitern. Der erste Schritt fängt das ab,
 statt in die Konto-Wurzel zu veröffentlichen.
 
-## Aufräumregel
+**In `SCIEBO_FOLDER` darf niemand sonst Dateien ablegen.** Gelöscht wird zwar nie, aber ein
+gleichnamiger Upload überschreibt. Ein reiner Verteilordner erfüllt das, ein gemischter
+Arbeitsordner nicht. Mehrere Repos dürfen sich einen Ordner teilen, solange sie verschiedene
+Dateinamen benutzen.
 
-Mehrere Repositories teilen sich denselben sciebo-Ordner, jedes räumt nur hinter sich selbst auf.
-Die Regel, und es gibt nur diese eine: erst hochladen, dann den Ordner per PROPFIND lesen, und nur
-Dateien löschen, die diesem Slug gehören und nicht gerade in diesem Lauf hochgeladen wurden.
-Scheitert der PROPFIND, wird nichts gelöscht.
+## Dateinamen
 
-Eigentum heißt: der Dateiname endet auf `.<ext>`, beginnt mit `<slug>-` und beginnt nicht mit
-`<anderer-slug>-` eines der übrigen bekannten Slugs. Im Modus `fixed` kommt genau ein Name hinzu,
-der blosse `<slug>.<ext>` ohne Version. Sonst nichts. Es gibt keine Zustandsdatei; die Ordnerliste
-ist der Zustand.
+Der Aufrufer bestimmt sie. Das Skript prüft nur, dass ein Name als Dateiname taugt: ein einzelnes
+Pfadsegment, höchstens 200 Byte, ohne Steuerzeichen, ohne führenden oder folgenden Leerraum, in
+NFC normalisiert, und nicht im Namensraum, den das Skript für sich reserviert (führender Punkt,
+Endung `.part`). Über alles Weitere, Endung inklusive, entscheidet der Aufrufer.
 
-Daraus folgt die Invariante, an der sich ein Lauf messen lässt: nach einem erfolgreichen Lauf
-enthält der Zielordner für dieses Slug-Präfix und diese Endung genau die Dateien, die dieser Lauf
-hochgeladen hat, und nichts sonst.
+Für die `.mcpb`-Extensions heißt das: in sciebo liegt `sciebo-latest.mcpb`, genau wie am
+Rolling-Release auf GitHub. Ein Bundle, ein Name, überall.
 
-Geprüft wird das dreifach: vor dem ersten Byte gegen die Dateinamen im Artefakt, dann in
-`owns_file` im Skript, und ein drittes Mal in `guard_owned` unmittelbar vor jedem `DELETE`.
+## Was nicht passiert
 
-## Kurznamen (Slugs)
+- **Kein DELETE.** Das Skript kennt vier Methoden, `PUT`, `GET`, `PROPFIND` und `MOVE`. Jede andere
+  wird abgewiesen, bevor ein Socket aufgeht, und der Selbsttest beweist diese Reihenfolge offline
+  mit einem `urlopen`, das jeden Aufruf als Fehler meldet.
+- **Kein MKCOL.** Der Zielordner muss existieren. Ein falsch gesetzter `SCIEBO_FOLDER` bricht mit
+  404 ab, statt irgendwo einen Ordner anzulegen.
+- **Keine Versionskontrolle in sciebo.** Es gibt kein `.version.json`, keine `VERSIONS.md`, keine
+  Historie und keinen Versionsvergleich. Welche Version online ist, steht im Bundle und auf GitHub.
 
-| Slug | Repository | Modus |
-|------|------------|-------|
-| confluence | mcp-confluence | versioned |
-| github-access | mcp-github-access | versioned |
-| sciebo | mcp-sciebo | versioned |
-| uni-mail | mcp-uni-mail | versioned |
-| ent-thesis | – | fixed |
-| ent-aem | – | fixed |
-| ent-access | – | fixed |
+Der Preis dafür ist eine Karteileiche: Wird eine Datei zurückgezogen oder umbenannt, bleibt die
+alte liegen. Deshalb liest der Job den Ordner nach dem Schreiben und **meldet** jede Datei, die
+nicht aus diesem Lauf stammt, im Log und in der Zusammenfassung. Entfernen muss man sie von Hand.
+Das ist Absicht: melden kann nichts kaputtmachen, löschen schon.
 
-Die Repositories der drei Plugins sind hier noch nicht eingetragen; sie gehören nachgepflegt, sobald
-sie feststehen.
+## Ersetzen in zwei Schritten
 
-Die Allowlist lebt in `KNOWN_SLUGS` in der Workflow-Datei. Kein Slug darf ein anderer Slug plus
-`-…` sein, in keiner der beiden Richtungen: das Slug-Präfix ist die einzige Grundlage dafür, welche
-Dateien ein Lauf löschen darf. Der Workflow prüft die Regel paarweise über die gesamte Allowlist
-und lehnt sonst ab.
+Ein Überschreiben per `PUT` ist nicht atomar. Bricht es ab, stünde eine halbe Datei unter dem
+Namen, den alle kennen, und einen Vorgänger zum Zurückfallen gäbe es nicht. Deshalb:
 
-Eine neue Extension oder ein neues Plugin aufnehmen:
+1. `PUT` auf `.<name>.part`, im Web ausgeblendet, weil der Name mit einem Punkt beginnt
+2. `GET` derselben Datei und Vergleich der SHA-256-Summe gegen die gebauten Bytes
+3. `MOVE` mit `Overwrite: T` auf `<name>`
 
-1. Slug in `KNOWN_SLUGS` in `.github/workflows/publish-sciebo.yml` eintragen
-2. Zeile in der Tabelle oben ergänzen, mit dem Modus, in dem der Slug veröffentlicht
-3. Prüfen, dass der neue Slug kein Präfix eines bestehenden ist und umgekehrt – die Regel gilt
-   modus- und endungsübergreifend, alle Slugs teilen sich denselben Ordner
-4. Secrets und Variablen im neuen Repository setzen
-5. `v1` erst nachziehen, wenn beides zusammen auf `main` liegt
+Der Zielname wechselt damit von einer vollständigen Datei zur nächsten. Scheitert einer der
+Schritte, bleibt die bisherige Datei unberührt, der Lauf schlägt fehl, und die `.part`-Datei wird
+beim nächsten Lauf überschrieben. Sie heißt deterministisch nach ihrem Ziel, sammelt sich also
+nicht an.
+
+## Was der Lauf nicht erkennen kann
+
+Ohne Version im Namen und ohne Zustandsdatei lässt sich nicht feststellen, ob sich etwas geändert
+hat. Jeder Lauf lädt deshalb alles hoch. Folgen: die Dateiversionierung im sciebo-Konto wächst
+entsprechend mit, und jeder Klient mit synchronisiertem Ordner lädt alles neu. Bei kleinen Bundles
+ist das nicht der Rede wert, bei großen schon.
 
 ## Skript und Versionierung
 
@@ -159,11 +142,22 @@ definiert. Der Workflow lädt das Skript genau an dieser SHA nach `$RUNNER_TEMP`
 Herkunft in die Zusammenfassung des Laufs. Workflow-Datei und Skript stammen damit immer aus
 demselben Commit.
 
-Das Skript trägt einen Selbsttest der Schutzlogik (`--self-test`). Er läuft in der CI dieses
-Repositories bei jedem Push und Pull Request und zusätzlich in jedem Lauf, bevor die Zugangsdaten
-überhaupt in die Umgebung gelangen.
+Das Skript trägt einen Selbsttest (`--self-test`) und einen `--dry-run`, der nur liest. Der
+Selbsttest läuft in der CI dieses Repositories bei jedem Push und Pull Request und zusätzlich in
+jedem Lauf, bevor die Zugangsdaten überhaupt in die Umgebung gelangen.
 
-Aufrufer referenzieren `@v1`, nicht `@main`. `v1` ist ein bewusst verschobener Tag: eine Änderung
-auf `main` wird erst wirksam, wenn `v1` nachgezogen wird. Zusätzlich trägt jede Änderung einen
-unveränderlichen Tag `v1.x.y`. Der Grund: ein Lauf läuft mit den Secrets des aufrufenden
-Repositories, hier also mit einem fremden sciebo-App-Passwort.
+Die Aufrufer referenzieren derzeit `@main`. Empfehlenswert ist ein verschobener Tag, weil ein Lauf
+mit den Secrets des aufrufenden Repositories läuft, hier also mit einem fremden
+sciebo-App-Passwort. Der Wechsel ist ein eigener Schritt: der Tag muss existieren, bevor ein
+Aufrufer ihn referenzieren kann, und der Vertrag dieses Workflows ist gegenüber `v1` ein anderer,
+also wäre es `v2` und nicht ein verschobenes `v1`.
+
+## Einmalige Handarbeit beim Umstieg
+
+Der Umstieg auf stabile Namen lässt die bisherigen Dateien liegen, denn gelöscht wird nichts. Nach
+dem ersten erfolgreichen Lauf je Repo gehören von Hand entfernt:
+
+- die versionierten Bundles im Extensions-Ordner (`sciebo-v0.1.3.mcpb`, `uni-mail-exchange-v1.1.4.mcpb`, …)
+- `.version.json` und `VERSIONS.md` in den Marketplace-Ordnern
+
+Der Lauf listet sie als "nicht aus diesem Lauf" auf, es ist also nichts zu suchen.
