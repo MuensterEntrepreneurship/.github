@@ -13,10 +13,10 @@ Endungsliste, keine Versionsgrammatik. Der Aufrufer bestimmt die Namen, indem
 er die Dateien im Artefakt so benennt, wie sie in sciebo heißen sollen.
 
 Ersetzt wird in zwei Schritten, damit der Zielname nie eine halbe Datei trägt:
-PUT auf ".<name>.part", Bytes zurücklesen und vergleichen, dann MOVE mit
+PUT auf ".upload.<name>", Bytes zurücklesen und vergleichen, dann MOVE mit
 Overwrite auf "<name>". Der Zielname wechselt damit von einer vollständigen
 Datei zur nächsten. Scheitert einer der Schritte, bleibt die alte Datei stehen
-und die (im Web versteckte) .part-Datei wird beim nächsten Lauf überschrieben.
+und die (im Web versteckte) Zwischendatei wird beim nächsten Lauf überschrieben.
 
 Aufruf:
   publish_sciebo.py DIST_DIR              DIST_DIR/* hochladen
@@ -57,7 +57,14 @@ DAV_FILES = "/remote.php/dav/files/"
 ALLOWED_METHODS = ("PUT", "GET", "PROPFIND", "MOVE")
 
 MAX_NAME = 200
-PART_SUFFIX = ".part"
+# Der Zwischenname trägt ein Präfix, keine eigene Endung: Nextcloud lehnt einen
+# PUT auf Namen mit der Endung .part rundweg mit HTTP 400 ab (die Endung ist für
+# seinen eigenen Teil-Upload reserviert, forbidden_filename_extensions), und
+# welche Endungen eine Instanz sonst noch sperrt, ist Konfigurationssache. Mit
+# dem Präfix endet die Zwischendatei auf dieselbe Endung wie ihr Ziel: was als
+# Ziel erlaubt ist, ist damit auch als Zwischenstand erlaubt. Der führende Punkt
+# blendet sie in der Weboberfläche aus.
+UPLOAD_PREFIX = ".upload"
 
 
 def log(msg):
@@ -79,8 +86,8 @@ def check_name(name):
     """Der Name, unter dem eine Datei in sciebo liegen soll. Fehler als Text, sonst None.
 
     Geprüft wird, dass der Name ein einzelnes Pfadsegment ist und nicht in den
-    Namensraum greift, den dieses Skript für sich reserviert (führender Punkt
-    und die Endung .part). Über den Inhalt des Namens entscheidet der Aufrufer:
+    Namensraum greift, den dieses Skript für sich reserviert (führender Punkt).
+    Über den Inhalt des Namens entscheidet der Aufrufer:
     jede Endung ist erlaubt, auch mehrteilige wie .tar.gz, und ob eine Version
     darin steht, geht dieses Skript nichts an.
     """
@@ -97,17 +104,19 @@ def check_name(name):
     if name != name.strip():
         return "beginnt oder endet mit Leerraum"
     if name.startswith("."):
-        return "beginnt mit einem Punkt - der Namensraum ist für .part reserviert"
-    if name.endswith(PART_SUFFIX):
-        return f"endet auf {PART_SUFFIX} - diese Endung ist reserviert"
+        return f"beginnt mit einem Punkt - der Namensraum ist für {UPLOAD_PREFIX} reserviert"
     if unicodedata.normalize("NFC", name) != name:
         return "ist nicht NFC-normalisiert - sonst hängt der Name vom Client ab"
     return None
 
 
-def part_name(name):
+def upload_name(name):
     """Der versteckte Zwischenname, auf den hochgeladen wird."""
-    return "." + name + PART_SUFFIX
+    return UPLOAD_PREFIX + "." + name
+
+
+def is_upload_name(name):
+    return name.startswith(UPLOAD_PREFIX + ".")
 
 
 # --- Umgebung und lokale Dateien --------------------------------------------
@@ -306,12 +315,12 @@ class Dav:
             return status, None
 
     def replace(self, f):
-        """Eine Datei ersetzen: PUT auf .part, zurücklesen, MOVE auf den Zielnamen.
+        """Eine Datei ersetzen: PUT auf den Zwischennamen, zurücklesen, MOVE auf das Ziel.
 
         Gibt (True, "") zurück oder (False, Grund). Bei jedem Fehlschlag bleibt
         die bisherige Datei unter dem Zielnamen unberührt.
         """
-        name, tmp = f["name"], part_name(f["name"])
+        name, tmp = f["name"], upload_name(f["name"])
         status, _ = self.request("PUT", tmp, data=f["data"])
         if status not in (200, 201, 204):
             return False, f"Upload fehlgeschlagen ({explain(status)})"
@@ -373,7 +382,7 @@ def report_folder(entries, planned):
             kind = "ordner"
         elif name in planned:
             kind = "eigen "
-        elif name.startswith(".") and name.endswith(PART_SUFFIX):
+        elif is_upload_name(name):
             kind = "rest  "  # abgebrochener Upload, wird beim nächsten Lauf überschrieben
         else:
             kind = "fremd "
@@ -508,13 +517,17 @@ def self_test():
     for name, why in [("", "leer"), (".", "punkt"), ("..", "punktpunkt"),
                       ("a/b.mcpb", "slash"), ("a\\b.mcpb", "backslash"),
                       (".versteckt.mcpb", "führender punkt"),
-                      ("x.mcpb.part", "reservierte endung"),
+                      (".upload.x.mcpb", "reservierter zwischenname"),
                       ("x.mcpb\n", "steuerzeichen"), (" x.mcpb", "leerraum vorn"),
                       ("x.mcpb ", "leerraum hinten"), ("a" * (MAX_NAME + 1), "zu lang"),
                       (unicodedata.normalize("NFD", "münster.mcpb"), "nicht NFC")]:
         ok(check_name(name) is not None, f"check_name({name!r}) hätte scheitern müssen ({why})")
-    ok(part_name("sciebo-latest.mcpb") == ".sciebo-latest.mcpb.part", "part_name")
-    ok(check_name(part_name("x.mcpb")) is not None, "der eigene .part-Name ist kein gültiger Quellname")
+    ok(upload_name("sciebo-latest.mcpb") == ".upload.sciebo-latest.mcpb", "upload_name")
+    ok(check_name(upload_name("x.mcpb")) is not None,
+       "der eigene Zwischenname ist kein gültiger Quellname")
+    ok(upload_name("x.mcpb").endswith(".mcpb"),
+       "der Zwischenname endet auf dieselbe Endung wie sein Ziel - sonst greift Nextclouds Endungssperre")
+    ok(is_upload_name(".upload.x.mcpb") and not is_upload_name("x.mcpb"), "is_upload_name")
 
     # 3. Zielordner, insbesondere das Prozentzeichen
     for folder in ("Desktop Extensions", "21 Claude Plugins/Marketplace Basic", "a/b/c"):
@@ -545,8 +558,8 @@ def self_test():
        join_target("https://h/remote.php/dav/files/u%40x.de/", "/A B/C/"), "join_target ist robust gegen Slashes")
     d = Dav(join_target("https://h/remote.php/dav/files/u%40x.de", "A B"), "u", "p")
     ok(d.url_for("x y.mcpb") == "https://h/remote.php/dav/files/u%40x.de/A%20B/x%20y.mcpb", "url_for")
-    ok(d.url_for(part_name("x.mcpb")) ==
-       "https://h/remote.php/dav/files/u%40x.de/A%20B/.x.mcpb.part", "url_for part")
+    ok(d.url_for(upload_name("x.mcpb")) ==
+       "https://h/remote.php/dav/files/u%40x.de/A%20B/.upload.x.mcpb", "url_for Zwischenname")
 
     # 5. Ordnerliste
     xml = (b'<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">'
@@ -579,8 +592,8 @@ def self_test():
     # 6. Der Bericht: was dieser Lauf nicht geschrieben hat, wird gemeldet, nicht gelöscht.
     others = report_folder(entries, {"sciebo-latest.mcpb"})
     ok(others == [".version.json"], f"report_folder meldet Fremdes: {others}")
-    ok(report_folder([{"name": ".x.mcpb.part", "is_collection": False}], set()) == [],
-       "eine .part-Datei gilt als eigener Rest, nicht als fremd")
+    ok(report_folder([{"name": ".upload.x.mcpb", "is_collection": False}], set()) == [],
+       "eine Zwischendatei gilt als eigener Rest, nicht als fremd")
     ok(report_folder([{"name": "Sub Folder", "is_collection": True}], set()) == [],
        "ein Ordner wird nie gemeldet und nie angefasst")
 

@@ -90,8 +90,8 @@ Dateinamen benutzen.
 
 Der Aufrufer bestimmt sie. Das Skript prüft nur, dass ein Name als Dateiname taugt: ein einzelnes
 Pfadsegment, höchstens 200 Byte, ohne Steuerzeichen, ohne führenden oder folgenden Leerraum, in
-NFC normalisiert, und nicht im Namensraum, den das Skript für sich reserviert (führender Punkt,
-Endung `.part`). Über alles Weitere, Endung inklusive, entscheidet der Aufrufer.
+NFC normalisiert, und nicht im Namensraum, den das Skript für sich reserviert (führender Punkt).
+Über alles Weitere, Endung inklusive, entscheidet der Aufrufer.
 
 Für die `.mcpb`-Extensions heißt das: in sciebo liegt `sciebo-latest.mcpb`, genau wie am
 Rolling-Release auf GitHub. Ein Bundle, ein Name, überall.
@@ -116,14 +116,21 @@ Das ist Absicht: melden kann nichts kaputtmachen, löschen schon.
 Ein Überschreiben per `PUT` ist nicht atomar. Bricht es ab, stünde eine halbe Datei unter dem
 Namen, den alle kennen, und einen Vorgänger zum Zurückfallen gäbe es nicht. Deshalb:
 
-1. `PUT` auf `.<name>.part`, im Web ausgeblendet, weil der Name mit einem Punkt beginnt
+1. `PUT` auf `.upload.<name>`, im Web ausgeblendet, weil der Name mit einem Punkt beginnt
 2. `GET` derselben Datei und Vergleich der SHA-256-Summe gegen die gebauten Bytes
 3. `MOVE` mit `Overwrite: T` auf `<name>`
 
 Der Zielname wechselt damit von einer vollständigen Datei zur nächsten. Scheitert einer der
-Schritte, bleibt die bisherige Datei unberührt, der Lauf schlägt fehl, und die `.part`-Datei wird
+Schritte, bleibt die bisherige Datei unberührt, der Lauf schlägt fehl, und die Zwischendatei wird
 beim nächsten Lauf überschrieben. Sie heißt deterministisch nach ihrem Ziel, sammelt sich also
 nicht an.
+
+Der Zwischenname trägt ein Präfix und keine eigene Endung, und das ist kein Geschmacksurteil:
+Nextcloud lehnt einen `PUT` auf einen Namen mit der Endung `.part` mit HTTP 400 ab, weil diese
+Endung für seinen eigenen Teil-Upload reserviert ist, und welche Endungen eine Instanz sonst noch
+sperrt (`forbidden_filename_extensions`) ist Konfigurationssache. Mit dem Präfix endet die
+Zwischendatei auf dieselbe Endung wie ihr Ziel: was als Ziel erlaubt ist, ist damit auch als
+Zwischenstand erlaubt.
 
 ## Was der Lauf nicht erkennen kann
 
