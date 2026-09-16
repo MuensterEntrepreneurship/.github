@@ -530,7 +530,7 @@ def self_test():
     ok(is_upload_name(".upload.x.mcpb") and not is_upload_name("x.mcpb"), "is_upload_name")
 
     # 3. Zielordner, insbesondere das Prozentzeichen
-    for folder in ("Desktop Extensions", "21 Claude Plugins/Marketplace Basic", "a/b/c"):
+    for folder in ("Desktop Extensions", "21 Claude/Marketplace Basic", "a/b/c"):
         ok(check_folder(folder) is None, f"check_folder({folder!r}) hätte durchgehen müssen")
     for folder, why in [("", "leer"), ("2025%20alt", "prozent"), ("a//b", "leeres segment"),
                         ("a/../b", "punktpunkt"), ("a/./b", "punkt"), ("a\\b", "backslash")]:
