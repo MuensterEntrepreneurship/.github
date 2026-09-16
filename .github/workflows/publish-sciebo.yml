@@ -16,8 +16,10 @@ name: publish-sciebo
 # und keine Versionsgrammatik. Welche Dateien entstehen, entscheidet allein der
 # Aufrufer über die Namen im Artefakt; .mcpb, .plugin, ein Skill-Zip oder eine
 # PDF sind für diesen Job dasselbe. Der Preis dafür steht in docs/publish-sciebo.md:
-# eine zurückgezogene Datei bleibt liegen, bis jemand sie von Hand entfernt. Der
-# Job meldet solche Dateien nach jedem Lauf, er entfernt sie nicht.
+# eine zurückgezogene Datei bleibt liegen, und der Lauf kann sie nicht erkennen -
+# mehrere Repos teilen sich einen Ordner, und die aktuelle Datei eines anderen
+# Repos sieht von hier aus aus wie eine eigene Karteileiche. Der Job listet den
+# Ordner deshalb nur auf und urteilt nicht.
 #
 # Ersetzt wird in zwei Schritten, damit der Zielname nie eine halbe Datei trägt:
 # PUT auf ".<name>.part", Bytes zurücklesen und vergleichen, dann MOVE mit

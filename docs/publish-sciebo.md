@@ -107,9 +107,11 @@ Rolling-Release auf GitHub. Ein Bundle, ein Name, überall.
   Historie und keinen Versionsvergleich. Welche Version online ist, steht im Bundle und auf GitHub.
 
 Der Preis dafür ist eine Karteileiche: Wird eine Datei zurückgezogen oder umbenannt, bleibt die
-alte liegen. Deshalb liest der Job den Ordner nach dem Schreiben und **meldet** jede Datei, die
-nicht aus diesem Lauf stammt, im Log und in der Zusammenfassung. Entfernen muss man sie von Hand.
-Das ist Absicht: melden kann nichts kaputtmachen, löschen schon.
+alte liegen, und **der Lauf kann das nicht erkennen**. Mehrere Repos teilen sich einen Ordner; die
+aktuelle Datei eines anderen Repos sieht von hier aus genauso aus wie eine eigene Karteileiche.
+Genau diese Unterscheidung trifft dieser Spiegel nicht mehr, also darf er sie auch nicht andeuten:
+er listet den Ordnerinhalt auf, markiert darin nur die Dateien dieses Laufs und urteilt über keine
+andere. Aufräumen ist eine menschliche Entscheidung, keine Empfehlung aus einem Log.
 
 ## Ersetzen in zwei Schritten
 
@@ -167,4 +169,4 @@ dem ersten erfolgreichen Lauf je Repo gehören von Hand entfernt:
 - die versionierten Bundles im Extensions-Ordner (`sciebo-v0.1.3.mcpb`, `uni-mail-exchange-v1.1.4.mcpb`, …)
 - `.version.json` und `VERSIONS.md` in den Marketplace-Ordnern
 
-Der Lauf listet sie als "nicht aus diesem Lauf" auf, es ist also nichts zu suchen.
+Der Lauf listet den Ordnerinhalt am Ende auf, die Namen stehen also im Log.

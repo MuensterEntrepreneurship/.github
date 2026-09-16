@@ -37,7 +37,9 @@ Laufzeit an genau dem Commit nachgeladen, aus dem dieser Workflow selbst läuft.
 """
 
 import base64
+import contextlib
 import hashlib
+import io
 import os
 import sys
 import time
@@ -350,7 +352,7 @@ def explain(code):
 
 # --- Ablauf -------------------------------------------------------------------
 
-def write_summary(folder, rows, others):
+def write_summary(folder, rows):
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         return
@@ -360,35 +362,30 @@ def write_summary(folder, rows, others):
         size_s = f"{size / 1024:.0f} KB" if size else "-"
         sha_s = f"`{sha[:16]}`" if sha else "-"
         lines.append(f"| `{name}` | {action} | {size_s} | {sha_s} |")
-    if others:
-        lines += ["", "Nicht aus diesem Lauf (es wird nichts gelöscht, Aufräumen von Hand):", ""]
-        lines += [f"- `{name}`" for name in others]
     with open(path, "a", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n\n")
 
 
 def report_folder(entries, planned):
-    """Ordnerinhalt zeigen und die Namen zurückgeben, die dieser Lauf nicht kennt.
+    """Den Ordnerinhalt zeigen, und sonst nichts.
 
-    Gemessen wird gegen die Sollmenge, nicht gegen die Erfolgsmenge: eine Datei,
-    die dieser Lauf schreiben wollte, gehört zu ihm, auch wenn das Schreiben
-    fehlschlug. Sonst empfähle der Bericht ausgerechnet im Fehlerfall, die noch
-    gültige Datei von Hand zu entfernen.
+    Markiert wird nur, was dieser Lauf schreiben wollte. Über alles andere sagt
+    dieser Bericht bewusst nichts aus: mehrere Repos teilen sich einen Ordner,
+    und ein Lauf kann die aktuelle Datei eines anderen Repos nicht von einer
+    eigenen Karteileiche unterscheiden. Diese Unterscheidung ist genau das, was
+    dieser Spiegel nicht mehr trifft - also darf er sie auch nicht andeuten.
     """
-    others = []
     for e in entries:
         name = e["name"]
         if e["is_collection"]:
-            kind = "ordner"
+            kind = "ordner "
         elif name in planned:
-            kind = "eigen "
+            kind = "dieser "
         elif is_upload_name(name):
-            kind = "rest  "  # abgebrochener Upload, wird beim nächsten Lauf überschrieben
+            kind = "rest   "  # abgebrochener Upload, wird beim nächsten Lauf überschrieben
         else:
-            kind = "fremd "
-            others.append(name)
+            kind = "       "
         log(f"  [{kind}] {name}")
-    return others
 
 
 def main(argv):
@@ -449,22 +446,17 @@ def main(argv):
 
     planned = {f["name"] for f in local}
     status, after = dav.listing()
-    others = []
     if after is None:
         warn("Ordnerliste nach dem Upload nicht lesbar - der Bericht bleibt unvollständig. "
              "Geschrieben wurde trotzdem, gelöscht wird ohnehin nie.", "PROPFIND fehlgeschlagen")
     else:
         log(f"Ordner nachher ({len(after)} Einträge):")
-        others = report_folder(after, planned)
+        report_folder(after, planned)
         missing = [f["name"] for f in ok if f["name"] not in {e["name"] for e in after}]
         for name in missing:
             warn(f"{name} fehlt in der Ordnerliste nach dem Upload.", "Nachprüfung")
-        if others:
-            warn(f"{len(others)} Datei(en) im Ordner stammen nicht aus diesem Lauf: "
-                 + ", ".join(others) + ". Dieser Spiegel löscht nichts; "
-                 "veraltete Dateien gehören von Hand entfernt.", "Nicht aus diesem Lauf")
 
-    write_summary(folder, rows, others)
+    write_summary(folder, rows)
 
     log("---")
     if failed:
@@ -589,13 +581,20 @@ def self_test():
         except ValueError:
             ok(True, "")
 
-    # 6. Der Bericht: was dieser Lauf nicht geschrieben hat, wird gemeldet, nicht gelöscht.
-    others = report_folder(entries, {"sciebo-latest.mcpb"})
-    ok(others == [".version.json"], f"report_folder meldet Fremdes: {others}")
-    ok(report_folder([{"name": ".upload.x.mcpb", "is_collection": False}], set()) == [],
-       "eine Zwischendatei gilt als eigener Rest, nicht als fremd")
-    ok(report_folder([{"name": "Sub Folder", "is_collection": True}], set()) == [],
-       "ein Ordner wird nie gemeldet und nie angefasst")
+    # 6. Der Bericht listet nur auf und bewertet nichts. Mehrere Repos teilen sich
+    #    einen Ordner: die aktuelle Datei eines anderen Repos sieht von hier aus
+    #    genauso aus wie eine eigene Karteileiche, also wird über keine von beiden
+    #    etwas behauptet.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        result = report_folder(entries, {"sciebo-latest.mcpb"})
+    shown = buf.getvalue()
+    ok(result is None, "report_folder gibt keine Bewertung zurück")
+    for name in (".version.json", "Sub Folder", "sciebo-latest.mcpb"):
+        ok(name in shown, f"{name} fehlt in der Auflistung")
+    ok("dieser" in shown, "die Dateien dieses Laufs sind erkennbar")
+    for wort in ("fremd", "entfernt", "entfernen", "veraltet", "Karteileiche"):
+        ok(wort not in shown, f"der Bericht urteilt mit dem Wort {wort!r} über fremde Dateien")
 
     log(f"Selbsttest OK: {checks} Prüfungen bestanden")
     return 0
